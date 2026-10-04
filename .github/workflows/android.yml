@@ -52,3 +52,4 @@ jobs:
         with:
           name: MuNote-Test-${{ github.run_number }}
           path: MuNote-Test-${{ env.MUNOTE_VERSION_NAME }}.apk
+          retention-days: 3
