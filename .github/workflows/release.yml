@@ -103,20 +103,18 @@ jobs:
           STORE_PASSWORD: ${{ secrets.MUNOTE_SIGNING_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.MUNOTE_SIGNING_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.MUNOTE_SIGNING_KEY_PASSWORD }}
-          EXPECTED_CERT: ${{ secrets.MUNOTE_SIGNING_CERT_SHA256 }}
         run: |
           set -euo pipefail
           test -n "$KEY_BASE64"
           test -n "$STORE_PASSWORD"
           test -n "$KEY_ALIAS"
           test -n "$KEY_PASSWORD"
-          test -n "$EXPECTED_CERT"
           mkdir -p "$GITHUB_WORKSPACE/.ci"
           KEYSTORE="$GITHUB_WORKSPACE/.ci/munote-release.jks"
           printf '%s' "$KEY_BASE64" | base64 --decode > "$KEYSTORE"
           chmod 600 "$KEYSTORE"
           ACTUAL=$(keytool -list -v -keystore "$KEYSTORE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS"             | awk -F': ' '/SHA256:/ { gsub(":","",$2); print toupper($2); exit }')
-          EXPECTED=$(printf '%s' "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          EXPECTED="3424EDF819B748746114DF15B2B8333DC088F928516BCC68E836FCAB021B8592"
           test "$ACTUAL" = "$EXPECTED"
           echo "MUNOTE_SIGNING_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
           echo "MUNOTE_SIGNING_STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
