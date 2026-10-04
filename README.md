@@ -69,15 +69,12 @@ MuNote 是一个 clean-room 实现的 Android 项目，目标是把接近 Notein
 
 ## 发布方式
 
-> 接手本仓库前请先阅读 `AGENTS.md` 与 `docs/SIGNING.md`。正式 Android 包的包名与签名证书属于项目硬约束，不能自行更换。
-
 MuNote 后续安装包统一通过 GitHub Releases 分发，不再把可下载测试 APK 长期存放在 Actions Artifact。
 
-- 候选版本先由 GitHub Actions 使用**永久私有签名**编译，并直接发布为 **Pre-release**。
+- 需要下载安装测试的候选版本直接发布为 **Pre-release**。
 - 测试通过后，原 Pre-release 直接转为正式 **Release**；不会重新编译，也不会替换已经测试过的 APK。
 - 如果候选版本存在问题，不覆盖旧版本，修复后使用新的版本号重新发布。
 - 历史 Pre-release 和正式 Release 均保留，不做自动清理。
-- 仓库内的 `munote-test.keystore` 仅用于公开测试/debug 包，**不作为正式发布签名**。正式候选版要求 GitHub Secrets 中配置独立的永久私有签名。
 
 ## 数据设计
 
