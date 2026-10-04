@@ -67,6 +67,16 @@ MuNote 是一个 clean-room 实现的 Android 项目，目标是把接近 Notein
 - **不会为了备份在 Android 根目录创建 MuNote 文件夹，也不会自动上传云端**
 - 中文 / English 双语界面，**首次安装默认中文**
 
+## 发布方式
+
+MuNote 后续安装包统一通过 GitHub Releases 分发，不再把可下载测试 APK 长期存放在 Actions Artifact。
+
+- 候选版本先由 GitHub Actions 使用**永久私有签名**编译，并直接发布为 **Pre-release**。
+- 测试通过后，原 Pre-release 直接转为正式 **Release**；不会重新编译，也不会替换已经测试过的 APK。
+- 如果候选版本存在问题，不覆盖旧版本，修复后使用新的版本号重新发布。
+- 历史 Pre-release 和正式 Release 均保留，不做自动清理。
+- 仓库内的 `munote-test.keystore` 仅用于公开测试/debug 包，**不作为正式发布签名**。正式候选版要求 GitHub Secrets 中配置独立的永久私有签名。
+
 ## 数据设计
 
 导入 PDF 的原文件与 MuNote 的可编辑数据分开保存。页面删除 / 复制 / 排序对导入 PDF 使用逻辑页映射，因此不会重写原文件。
