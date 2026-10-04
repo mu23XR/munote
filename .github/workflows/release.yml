@@ -114,6 +114,8 @@ jobs:
           printf '%s' "$KEY_BASE64" | base64 --decode > "$KEYSTORE"
           chmod 600 "$KEYSTORE"
           ACTUAL=$(keytool -list -v -keystore "$KEYSTORE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS"             | awk -F': ' '/SHA256:/ { gsub(":","",$2); print toupper($2); exit }')
+          # Production release only: keep this signer stable so installed production builds can upgrade in place.
+          # Test/debug workflows may use other signing keys.
           EXPECTED="3424EDF819B748746114DF15B2B8333DC088F928516BCC68E836FCAB021B8592"
           test "$ACTUAL" = "$EXPECTED"
           echo "MUNOTE_SIGNING_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
