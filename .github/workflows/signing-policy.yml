@@ -1,0 +1,48 @@
+name: Signing Policy Guard
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "docs/SIGNING.md"
+      - "app/build.gradle.kts"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/signing-policy.yml"
+  push:
+    branches: [ "main" ]
+    paths:
+      - "AGENTS.md"
+      - "docs/SIGNING.md"
+      - "app/build.gradle.kts"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/signing-policy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signing-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify production signing invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="3424EDF819B748746114DF15B2B8333DC088F928516BCC68E836FCAB021B8592"
+
+          grep -Fq 'applicationId = "dev.munote.app"' app/build.gradle.kts
+          grep -Fq 'signingConfig = signingConfigs.getByName("releasePrivate")' app/build.gradle.kts
+
+          grep -Fq "$EXPECTED" .github/workflows/release.yml
+          grep -Fq 'test "$ACTUAL" = "$EXPECTED"' .github/workflows/release.yml
+          grep -Fq 'test "$ACTUAL" = "$MUNOTE_EXPECTED_CERT"' .github/workflows/release.yml
+
+          if grep -Fq 'munote-test.keystore' .github/workflows/release.yml; then
+            echo "Production release workflow must not use the public MuNote test keystore."
+            exit 1
+          fi
+
+          grep -Fq '34:24:ED:F8:19:B7:48:74:61:14:DF:15:B2:B8:33:3D:C0:88:F9:28:51:6B:CC:68:E8:36:FC:AB:02:1B:85:92' docs/SIGNING.md
+          grep -Fq '34:24:ED:F8:19:B7:48:74:61:14:DF:15:B2:B8:33:3D:C0:88:F9:28:51:6B:CC:68:E8:36:FC:AB:02:1B:85:92' AGENTS.md
