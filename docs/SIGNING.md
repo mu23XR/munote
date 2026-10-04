@@ -26,3 +26,7 @@ The repository's public `app/keystore/munote-test.keystore` is only for historic
 ## Release rule
 
 A candidate build is compiled and signed once, uploaded as a GitHub Pre-release, then promoted in place to a stable Release after acceptance. Promotion does not rebuild or replace the APK.
+
+## Test build note
+
+Test/debug signing may be changed independently when needed. The fixed certificate above applies to the production Release workflow only. Test APKs signed with different keys may not upgrade over one another, which is acceptable for temporary testing.
