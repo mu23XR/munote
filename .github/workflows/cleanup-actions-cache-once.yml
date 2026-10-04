@@ -1,0 +1,35 @@
+name: One-time Actions cache cleanup
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/cleanup-actions-cache-once.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete rebuildable caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COUNT=0
+          TOTAL=0
+          while IFS=$'\t' read -r ID SIZE KEY; do
+            [ -n "$ID" ] || continue
+            COUNT=$((COUNT + 1))
+            TOTAL=$((TOTAL + SIZE))
+            echo "Deleting cache $ID ($KEY, $SIZE bytes)"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$ID"
+          done < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" --jq '.actions_caches[] | [.id, .size_in_bytes, .key] | @tsv'
+          )
+          echo "Deleted caches: $COUNT"
+          echo "Freed bytes: $TOTAL"
+          awk -v b="$TOTAL" 'BEGIN { printf "Freed MiB: %.2f\n", b/1048576 }'
