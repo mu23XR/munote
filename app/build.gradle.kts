@@ -5,6 +5,10 @@ val ciVersionCode = providers.environmentVariable("MUNOTE_VERSION_CODE")
 val ciVersionName = providers.environmentVariable("MUNOTE_VERSION_NAME")
     .orNull
     ?: "0.2.0-dev"
+val releaseKeystore = providers.environmentVariable("MUNOTE_SIGNING_KEYSTORE").orNull
+val releaseStorePassword = providers.environmentVariable("MUNOTE_SIGNING_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("MUNOTE_SIGNING_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("MUNOTE_SIGNING_KEY_PASSWORD").orNull
 
 plugins {
     id("com.android.application")
@@ -27,6 +31,14 @@ android {
     }
 
     signingConfigs {
+        create("releasePrivate") {
+            if (!releaseKeystore.isNullOrBlank()) {
+                storeFile = file(releaseKeystore)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
         create("test") {
             // Public test-only key. Never use this signing config for production/release builds.
             storeFile = file("keystore/munote-test.keystore")
@@ -50,8 +62,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Release signing is deliberately NOT configured here.
-            // Production builds must use a private release key supplied outside the public repo.
+            signingConfig = signingConfigs.getByName("releasePrivate")
+            // The private release key is supplied only by GitHub Actions/runtime environment.
         }
     }
 
