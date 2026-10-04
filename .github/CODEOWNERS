@@ -1,0 +1,6 @@
+# MuNote release/signing ownership
+/AGENTS.md @mu23XR
+/docs/SIGNING.md @mu23XR
+/app/build.gradle.kts @mu23XR
+/.github/workflows/release.yml @mu23XR
+/.github/workflows/signing-policy.yml @mu23XR
