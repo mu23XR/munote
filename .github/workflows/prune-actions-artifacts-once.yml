@@ -1,0 +1,48 @@
+name: One-time prune Actions artifacts
+
+on:
+  push:
+    branches:
+      - "chore/actions-storage-retention"
+    paths:
+      - ".github/workflows/prune-actions-artifacts-once.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old MuNote test artifacts except newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALL=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --slurp)
+          FLAT=$(printf '%s' "$ALL" | jq '[.[].artifacts[]]')
+
+          KEEP_ID=$(printf '%s' "$FLAT" | jq -r '
+            [ .[]
+              | select(.expired == false)
+              | select(.name | startswith("MuNote-Test-"))
+            ]
+            | sort_by(.created_at)
+            | last
+            | .id // empty
+          ')
+
+          echo "Keeping newest MuNote test artifact: ${KEEP_ID:-none}"
+
+          printf '%s' "$FLAT" | jq -r '.[] | select(.expired == false) | [.id, .name, .size_in_bytes] | @tsv' |
+          while IFS=$'\t' read -r ID NAME SIZE; do
+            if [[ -n "$KEEP_ID" && "$ID" == "$KEEP_ID" ]]; then
+              echo "KEEP   $ID  $SIZE  $NAME"
+              continue
+            fi
+            echo "DELETE $ID  $SIZE  $NAME"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID"
+          done
