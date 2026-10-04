@@ -1,4 +1,4 @@
-name: One-time Actions cache cleanup
+name: One-time Actions cache cleanup final
 
 on:
   push:
