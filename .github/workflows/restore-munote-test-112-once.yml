@@ -1,0 +1,88 @@
+name: Restore MuNote Test 112 prerelease
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/restore-munote-test-112-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: 62914447c3434faddc1ef86a2a28b96478b3b18e
+      RELEASE_TAG: v0.2.0-test.112
+      MUNOTE_VERSION_CODE: "112"
+      MUNOTE_VERSION_NAME: "0.2.0.112"
+    steps:
+      - name: Ensure historical prerelease does not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG already exists; refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Checkout exact Test 112 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Rebuild historical Test 112 APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Verify package, version and signer
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -f "$APK"
+          "$AAPT" dump badging "$APK" | tee /tmp/badging.txt
+          grep "package: name='dev.munote.app.debug'" /tmp/badging.txt
+          grep "versionCode='112'" /tmp/badging.txt
+          grep "versionName='0.2.0.112-test'" /tmp/badging.txt
+          "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/certs.txt
+          grep -i "293258f59770e0fd5e75f6497e506d9c95dfcf82c755de66dd76ded54a467d63" /tmp/certs.txt
+
+      - name: Prepare restored release asset
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/debug/app-debug.apk MuNote-Test-112-rebuilt.apk
+          sha256sum MuNote-Test-112-rebuilt.apk > MuNote-Test-112-rebuilt.apk.sha256
+          printf '%s\n' "$SOURCE_SHA" > SOURCE_COMMIT.txt
+
+      - name: Publish restored historical prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.md <<'EOF'
+          Historical MuNote Test 112 restored from the exact source commit after its temporary Actions Artifact was removed.
+
+          - Source commit: 62914447c3434faddc1ef86a2a28b96478b3b18e
+          - versionCode: 112
+          - versionName: 0.2.0.112-test
+          - package: dev.munote.app.debug
+          - signing certificate: historical MuNote public test signing key
+          - status: restored test build only; not a production signing baseline
+
+          The original Artifact file bytes are no longer available, so this is a reproducible rebuild rather than a byte-for-byte recovery of the deleted object.
+          EOF
+          gh release create "$RELEASE_TAG"             --repo "$GITHUB_REPOSITORY"             --target "$SOURCE_SHA"             --title "MuNote Test 112 (restored)"             --notes-file /tmp/notes.md             --prerelease             --latest=false             MuNote-Test-112-rebuilt.apk             MuNote-Test-112-rebuilt.apk.sha256             SOURCE_COMMIT.txt
