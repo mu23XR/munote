@@ -1,6 +1,11 @@
 import java.net.URI
 import java.security.MessageDigest
 
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
 // License: SIL OFL 1.1. Unmodified Noto Sans SC TrueType from google/fonts.
 // Pin both commit and Git blob SHA-1. This gets packaged into the APK.
 val muOcrFontBlob = "fb0637bafbcd804fe32152370a1225990745b4bc"
@@ -40,11 +45,6 @@ val prepareMuOcrFont = tasks.register("prepareMuOcrFont") {
             temp.delete()
         }
     }
-}
-
-plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
