@@ -53,7 +53,7 @@ public final class OcrUnicodeCMap {
                     " codepoint=" + codePoint);
             }
             if (written % 100 == 0) {
-                writer.write(Math.min(100, total - written) + " beginbfchar\\n");
+                writer.write(Math.min(100, total - written) + " beginbfchar\n");
             }
             writer.write("<");
             appendHex(writer, cid);
@@ -61,13 +61,13 @@ public final class OcrUnicodeCMap {
             for (char unit : Character.toChars(codePoint)) {
                 appendHex(writer, unit);
             }
-            writer.write(">\\n");
+            writer.write(">\n");
             written++;
             if (written % 100 == 0 || written == total) {
-                writer.write("endbfchar\\n");
+                writer.write("endbfchar\n");
             }
         }
-        writer.write("endcmap\\nCMapName currentdict /CMap defineresource pop\\nend\\nend\\n");
+        writer.write("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
         writer.flush();
         return bytes.toByteArray();
     }
