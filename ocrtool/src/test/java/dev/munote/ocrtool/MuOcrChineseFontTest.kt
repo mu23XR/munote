@@ -60,9 +60,11 @@ class MuOcrChineseFontTest {
                     stream.showText(phrase)
                     stream.endText()
                 }
-                // PDFBox does not automatically subset embedded fonts when
-                // saving incrementally. The Android resolver does this too.
-                font.subset()
+                // Desktop PDFBox 2.0.31 subsets fonts automatically when
+                // saving incrementally. Calling font.subset() here as well
+                // would subset a closed font twice and fail with missing cmap.
+                // PDFBox-Android 2.0.27.0 does NOT auto-subset, so the Android
+                // PdfSystemFontResolver calls subsetFontsForIncrementalSave().
                 val touched = LinkedHashSet<COSDictionary>()
                 page.cosObject.setNeedToBeUpdated(true)
                 touched.add(page.cosObject)
