@@ -98,10 +98,17 @@ class LargePdfOcrWorker(
         ledger.recoverAfterWorkerRestart()
         // A process can be killed after recording SUCCESS but before deleting
         // the private 1GB workcopy; reclaim those finished directories here.
-        ledger.snapshot().entries.filter {
-            it.status == OcrQueueLedger.Status.DONE
-        }.forEach { finished ->
-            OcrQueueScheduler.cleanTaskCache(applicationContext, finished.id)
+        ledger.snapshot().entries.forEach { entry ->
+            if (entry.status == OcrQueueLedger.Status.DONE ||
+                entry.status == OcrQueueLedger.Status.CANCELLED) {
+                if (entry.status == OcrQueueLedger.Status.CANCELLED) {
+                    OcrQueueScheduler.deleteIncompleteOutput(
+                        applicationContext, entry.outputUri
+                    )
+                    ledger.clearOutput(entry.id)
+                }
+                OcrQueueScheduler.cleanTaskCache(applicationContext, entry.id)
+            }
         }
         while (true) {
             coroutineContext.ensureActive()
