@@ -95,6 +95,72 @@ class IncrementalOcrPdfExporterTest {
         }
     }
 
+
+    @Test
+    fun blankOCRPagesDoNotCreateEmptyIncrementalRevisions() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        PDFBoxResourceLoader.init(context)
+        val root = File(context.cacheDir, "muocr-blank-test-" + System.nanoTime())
+        val source = File(root, "original.pdf")
+        val output = File(root, "output.pdf")
+        val journals = File(root, "pages")
+        root.mkdirs()
+        journals.mkdirs()
+
+        try {
+            PDDocument().use { doc ->
+                repeat(25) { doc.addPage(PDPage(PDRectangle(200f, 200f))) }
+                doc.save(source)
+            }
+            repeat(25) { index ->
+                OcrPageJournal.write(journals, index, OcrPageJournal.Page(
+                    1000, 1000, emptyList()
+                ))
+            }
+            val originalSize = source.length()
+            IncrementalOcrPdfExporter(
+                context, source, journals, File(root, "scratch").apply { mkdirs() }, 25
+            ) { _, _, _, _ -> }.exportTo(Uri.fromFile(output))
+            assertEquals("Blank OCR must leave source PDF untouched",
+                originalSize, source.length())
+            PDDocument.load(output).use { assertEquals(25, it.numberOfPages) }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun chineseUnicodeRemainsSearchableAfterIncrementalSave() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        PDFBoxResourceLoader.init(context)
+        val root = File(context.cacheDir, "muocr-chinese-test-" + System.nanoTime())
+        val source = File(root, "original.pdf")
+        val output = File(root, "output.pdf")
+        val journals = File(root, "pages")
+        root.mkdirs()
+        journals.mkdirs()
+        try {
+            PDDocument().use { doc ->
+                doc.addPage(PDPage(PDRectangle(200f, 200f)))
+                doc.save(source)
+            }
+            OcrPageJournal.write(journals, 0, OcrPageJournal.Page(
+                1000, 1000,
+                listOf(OcrPageJournal.Line("中文搜索测试123", Rect(40, 50, 700, 115)))
+            ))
+            IncrementalOcrPdfExporter(
+                context, source, journals, File(root, "scratch").apply { mkdirs() }, 1
+            ) { _, _, _, _ -> }.exportTo(Uri.fromFile(output))
+            PDDocument.load(output).use { doc ->
+                val text = PDFTextStripper().getText(doc).replace(Regex("\\s+"), "")
+                assertTrue("Chinese OCR text not extractable: " + text,
+                    text.contains("中文搜索测试123"))
+            }
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     private fun colorAtCenter(file: File): Int {
         ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
             PdfRenderer(fd).use { pdf ->
