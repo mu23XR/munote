@@ -96,6 +96,13 @@ class LargePdfOcrWorker(
     private suspend fun runQueue(): Result {
         val ledger = OcrQueueScheduler.store(applicationContext)
         ledger.recoverAfterWorkerRestart()
+        // A process can be killed after recording SUCCESS but before deleting
+        // the private 1GB workcopy; reclaim those finished directories here.
+        ledger.snapshot().entries.filter {
+            it.status == OcrQueueLedger.Status.DONE
+        }.forEach { finished ->
+            OcrQueueScheduler.cleanTaskCache(applicationContext, finished.id)
+        }
         while (true) {
             coroutineContext.ensureActive()
             val entry = ledger.claimNext() ?: return Result.success()
@@ -226,6 +233,14 @@ class LargePdfOcrWorker(
             }
 
             report("已完成", pageCount, pageCount, 100, true)
+            // Persist completion before deleting the task's work directory.
+            // Without this, process death between export and queue finish
+            // could force a completed 583-page document to OCR from scratch.
+            if (taskId != null) {
+                OcrQueueScheduler.store(applicationContext).finish(
+                    taskId, OcrQueueLedger.Status.DONE
+                )
+            }
             completed = true
             Result.success(workDataOf("pages" to pageCount))
         } catch (signal: TaskPaused) {
