@@ -457,7 +457,7 @@ class LargePdfOcrWorker(
                     "，期望 " + expectedPages)
             }
 
-            PdfSystemFontResolver(document, TAG).use { fonts ->
+            PdfSystemFontResolver(document, TAG, applicationContext).use { fonts ->
                 for (index in start until endExclusive) {
                     coroutineContext.ensureActive()
                     if (isStopped) throw CancellationException("PDF 导出已取消")

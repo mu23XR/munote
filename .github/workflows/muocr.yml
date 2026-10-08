@@ -41,6 +41,11 @@ jobs:
       - name: Test disk-backed PDF incremental writer
         run: gradle :ocrtool:testDebugUnitTest --stacktrace
 
+      - name: Print failed test stack traces
+        if: failure()
+        run: |
+          find ocrtool/build/test-results/testDebugUnitTest -type f -name '*.xml' -print -exec grep -A 45 -B 3 '<failure' {} \; || true
+
       - name: Build MuOCR APK
         run: gradle :ocrtool:assembleDebug --stacktrace
 
@@ -51,16 +56,16 @@ jobs:
           test -f "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --print-certs "$APK"
-          cp "$APK" MuOCR-0.1.2-test.apk
-          sha256sum MuOCR-0.1.2-test.apk > MuOCR-0.1.2-test.apk.sha256
+          cp "$APK" MuOCR-0.1.3-test.apk
+          sha256sum MuOCR-0.1.3-test.apk > MuOCR-0.1.3-test.apk.sha256
 
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
-          name: MuOCR-Android-0.1.2
+          name: MuOCR-Android-0.1.3
           path: |
-            MuOCR-0.1.2-test.apk
-            MuOCR-0.1.2-test.apk.sha256
+            MuOCR-0.1.3-test.apk
+            MuOCR-0.1.3-test.apk.sha256
           retention-days: 30
 
       - name: Publish MuOCR test release
@@ -69,14 +74,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="muocr-v0.1.2-test"
+          TAG="muocr-v0.1.3-test"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists. Published test APKs must never be overwritten."
             exit 1
           fi
-          gh release create "$TAG" MuOCR-0.1.2-test.apk MuOCR-0.1.2-test.apk.sha256 \
+          gh release create "$TAG" MuOCR-0.1.3-test.apk MuOCR-0.1.3-test.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "MuOCR 0.1.2 test — chunked PDF export" \
-            --notes "Chunked incremental PDF export (16 pages per batch), Unicode font subsetting and disk checkpoints; preserves OCR results from 0.1.1. Real 1GB input device validation remains pending." \
+            --title "MuOCR 0.1.3 test — Chinese font fix" \
+            --notes "Fixes OTF glyph-table errors on Xiaomi CJK fonts with a bundled SIL-OFL TrueType fallback and outline checks. Includes Chinese text-layer search regression tests and retains 583-page OCR checkpoints. Real 1GB device verification is pending." \
             --prerelease

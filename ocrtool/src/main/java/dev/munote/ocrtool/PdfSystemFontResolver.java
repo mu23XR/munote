@@ -1,6 +1,7 @@
 package dev.munote.ocrtool;
 
 import android.util.Log;
+import android.content.Context;
 
 import com.tom_roush.fontbox.ttf.CmapLookup;
 import com.tom_roush.fontbox.ttf.OTFParser;
@@ -8,18 +9,24 @@ import com.tom_roush.fontbox.ttf.OpenTypeFont;
 import com.tom_roush.fontbox.ttf.TTFParser;
 import com.tom_roush.fontbox.ttf.TrueTypeCollection;
 import com.tom_roush.fontbox.ttf.TrueTypeFont;
+import com.tom_roush.pdfbox.cos.COSName;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.pdmodel.common.PDStream;
 import com.tom_roush.pdfbox.pdmodel.font.PDFont;
 import com.tom_roush.pdfbox.pdmodel.font.PDType0Font;
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font;
 
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -56,16 +63,25 @@ public final class PdfSystemFontResolver implements Closeable {
     );
 
     private final PDDocument document;
+    private final Context context;
     private final String logTag;
+    private File fallbackFontFile;
+    private static final long FALLBACK_FONT_SIZE = 17772300L;
+    private static final String FALLBACK_ASSET = "fonts/MuOCR-NotoSansSC.ttf";
     private final Map<String, ResolvedFont> cache = new HashMap<>();
     private final List<Closeable> openFontResources = new ArrayList<>();
     // PDFBox-Android 2.0.27.0 does NOT subset fonts in saveIncremental().
     // Track all fonts (including older cache entries) and subset explicitly.
     private final List<PDFont> fontsForSubset = new ArrayList<>();
+    // Exact Unicode codepoints from OCR, keyed by original TrueType glyph ID
+    // (the CID encoded by PDFBox Identity-H streams).
+    private final Map<PDFont, Map<Integer, Integer>> originalUnicodeByGlyph =
+            new LinkedHashMap<>();
     private boolean subsetCompleted = false;
 
-    public PdfSystemFontResolver(PDDocument document, String logTag) {
+    public PdfSystemFontResolver(PDDocument document, String logTag, Context context) {
         this.document = document;
+        this.context = context.getApplicationContext();
         this.logTag = logTag == null || logTag.isEmpty() ? "PdfSystemFont" : logTag;
     }
 
@@ -78,15 +94,31 @@ public final class PdfSystemFontResolver implements Closeable {
         String key = script + (bold ? "-bold" : "-regular");
         ResolvedFont cached = cache.get(key);
         if (cached != null && supports(cached.trueTypeFont, text)) {
+            rememberUnicode(cached, text);
             return cached.pdfFont;
         }
 
         IOException lastError = null;
-        for (File fontFile : findCandidateFonts(script, bold)) {
+        final List<File> candidates = new ArrayList<>();
+        if ("chinese".equals(script) || "unicode".equals(script) ||
+                "japanese".equals(script) || "korean".equals(script)) {
+            // Xiaomi/Android CJK OTF and TTC fonts often contain CFF outlines,
+            // which PDFBox-Android's TrueType subsetter cannot handle.
+            // Prefer our licensed TrueType-glyf CJK fallback instead.
+            try {
+                candidates.add(prepareBundledFont());
+            } catch (IOException e) {
+                lastError = e;
+                Log.w(logTag, "内置中文字库不可用，尝试系统字体", e);
+            }
+        }
+        candidates.addAll(findCandidateFonts(script, bold));
+        for (File fontFile : candidates) {
             try {
                 ResolvedFont font = loadMatchingFont(fontFile, text);
                 if (font != null) {
                     cache.put(key, font);
+                    rememberUnicode(font, text);
                     Log.i(logTag, "PDF 字体: " + fontFile.getAbsolutePath() + " -> " + font.pdfFont.getName());
                     return font.pdfFont;
                 }
@@ -100,6 +132,48 @@ public final class PdfSystemFontResolver implements Closeable {
                 + " 文本类型=" + script;
         if (lastError != null) throw new IOException(message, lastError);
         throw new IOException(message);
+    }
+
+    /**
+     * The fallback asset is copied once into private persistent app storage.
+     * Loading font outlines directly from an APK stream can cause an extra
+     * large heap allocation in FontBox, especially with 17MB CJK fonts.
+     */
+    private File prepareBundledFont() throws IOException {
+        if (fallbackFontFile != null && fallbackFontFile.isFile() &&
+                fallbackFontFile.length() == FALLBACK_FONT_SIZE) return fallbackFontFile;
+        File dir = new File(context.getFilesDir(), "muocr-font-v1");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IOException("无法创建中文字库缓存目录");
+        }
+        File target = new File(dir, "MuOCR-NotoSansSC.ttf");
+        if (!target.isFile() || target.length() != FALLBACK_FONT_SIZE) {
+            File tmp = new File(dir, "MuOCR-NotoSansSC.ttf.tmp");
+            try {
+                try (InputStream input = context.getAssets().open(FALLBACK_ASSET);
+                     FileOutputStream output = new FileOutputStream(tmp)) {
+                    byte[] buffer = new byte[65536];
+                    int count;
+                    while ((count = input.read(buffer)) >= 0) {
+                        if (count > 0) output.write(buffer, 0, count);
+                    }
+                    output.getFD().sync();
+                }
+                if (tmp.length() != FALLBACK_FONT_SIZE) {
+                    throw new IOException("中文字库副本不完整: " + tmp.length());
+                }
+                if (target.exists() && !target.delete()) {
+                    throw new IOException("无法替换旧中文字库");
+                }
+                if (!tmp.renameTo(target)) {
+                    throw new IOException("无法保存中文字库到磁盘");
+                }
+            } finally {
+                tmp.delete();
+            }
+        }
+        fallbackFontFile = target;
+        return target;
     }
 
     private ResolvedFont loadMatchingFont(File file, String text) throws IOException {
@@ -169,8 +243,17 @@ public final class PdfSystemFontResolver implements Closeable {
         }
     }
 
+    /**
+     * CFF/OpenType and some .ttc members can be exposed as TrueTypeFont
+     * despite the lack of a /glyf table. Checking the filename extension
+     * or OpenTypeFont.isPostScript() alone misses this case.
+     * PDFBox-Android 2.0.27's TrueType subsetter requires glyf + loca.
+     */
     private static boolean isEmbeddableTrueType(TrueTypeFont font) {
-        return !(font instanceof OpenTypeFont) || !((OpenTypeFont) font).isPostScript();
+        Map<String, ?> tables = font.getTableMap();
+        return tables.containsKey("glyf") && tables.containsKey("loca")
+                && !tables.containsKey("CFF ")
+                && (!(font instanceof OpenTypeFont) || !((OpenTypeFont) font).isPostScript());
     }
 
     private static boolean supports(TrueTypeFont font, String text) {
@@ -275,6 +358,46 @@ public final class PdfSystemFontResolver implements Closeable {
     }
 
     /**
+     * Capture original OCR codepoints for each glyph, before PDFBox closes
+     * the font on subsetting. PDFBox's reverse font cmap can pick a Kangxi
+     * radical alias instead of the normal Chinese character used by OCR.
+     */
+    private void rememberUnicode(ResolvedFont font, String text) throws IOException {
+        CmapLookup cmap = font.trueTypeFont.getUnicodeCmapLookup(false);
+        if (cmap == null) throw new IOException("无法获取中文字库的 Unicode cmap");
+        Map<Integer, Integer> byGlyph = originalUnicodeByGlyph.computeIfAbsent(
+                font.pdfFont, ignored -> new LinkedHashMap<>());
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (shouldIgnoreForGlyphCheck(cp)) continue;
+            int gid = cmap.getGlyphId(cp);
+            if (gid <= 0) continue;
+            Integer previous = byGlyph.get(gid);
+            if (previous == null || isRadicalAlias(previous) && !isRadicalAlias(cp)) {
+                byGlyph.put(gid, cp);
+            }
+        }
+    }
+
+    private static boolean isRadicalAlias(int cp) {
+        return cp >= 0x2E80 && cp <= 0x2FDF;
+    }
+
+    private void writeExactToUnicodeMaps() throws IOException {
+        for (Map.Entry<PDFont, Map<Integer, Integer>> entry :
+                originalUnicodeByGlyph.entrySet()) {
+            if (entry.getValue().isEmpty()) continue;
+            PDStream stream = new PDStream(document);
+            try (OutputStream out = stream.createOutputStream(COSName.FLATE_DECODE)) {
+                out.write(OcrUnicodeCMap.encode(entry.getValue()));
+            }
+            entry.getKey().getCOSObject().setItem(COSName.TO_UNICODE, stream);
+            entry.getKey().getCOSObject().setNeedToBeUpdated(true);
+        }
+    }
+
+    /**
      * PDFBox-Android inherited a PDFBox bug: saveIncremental() doesn't invoke
      * PDType0Font.subset(). Without this, Chinese fonts may be unusable in the
      * exported PDF despite a successful write.
@@ -288,6 +411,8 @@ public final class PdfSystemFontResolver implements Closeable {
                 font.subset();
             }
         }
+        // Must follow subset(): it overwrites the generated ToUnicode entry.
+        writeExactToUnicodeMaps();
         subsetCompleted = true;
     }
 
