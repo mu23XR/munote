@@ -59,6 +59,10 @@ public final class PdfSystemFontResolver implements Closeable {
     private final String logTag;
     private final Map<String, ResolvedFont> cache = new HashMap<>();
     private final List<Closeable> openFontResources = new ArrayList<>();
+    // PDFBox-Android 2.0.27.0 does NOT subset fonts in saveIncremental().
+    // Track all fonts (including older cache entries) and subset explicitly.
+    private final List<PDFont> fontsForSubset = new ArrayList<>();
+    private boolean subsetCompleted = false;
 
     public PdfSystemFontResolver(PDDocument document, String logTag) {
         this.document = document;
@@ -122,6 +126,7 @@ public final class PdfSystemFontResolver implements Closeable {
                 return null;
             }
             PDFont font = PDType0Font.load(document, ttf, true);
+            fontsForSubset.add(font);
             openFontResources.add(ttf);
             return new ResolvedFont(font, ttf);
         } catch (Exception e) {
@@ -154,6 +159,7 @@ public final class PdfSystemFontResolver implements Closeable {
             }
 
             PDFont font = PDType0Font.load(document, selected[0], true);
+            fontsForSubset.add(font);
             openFontResources.add(collection);
             return new ResolvedFont(font, selected[0]);
         } catch (Exception e) {
@@ -266,6 +272,23 @@ public final class PdfSystemFontResolver implements Closeable {
             if (name.contains("jp") || name.contains("japanese") || name.contains("ja")) score += 80;
         }
         return score;
+    }
+
+    /**
+     * PDFBox-Android inherited a PDFBox bug: saveIncremental() doesn't invoke
+     * PDType0Font.subset(). Without this, Chinese fonts may be unusable in the
+     * exported PDF despite a successful write.
+     *
+     * Call after drawing all OCR text, and before saveIncremental().
+     */
+    public void subsetFontsForIncrementalSave() throws IOException {
+        if (subsetCompleted) return;
+        for (PDFont font : fontsForSubset) {
+            if (font.willBeSubset()) {
+                font.subset();
+            }
+        }
+        subsetCompleted = true;
     }
 
     @Override

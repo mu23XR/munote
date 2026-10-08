@@ -22,6 +22,10 @@ import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.tom_roush.pdfbox.cos.COSArray
+import com.tom_roush.pdfbox.cos.COSDictionary
+import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.cos.COSUpdateInfo
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -33,9 +37,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.LinkedHashSet
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
@@ -45,8 +51,9 @@ import kotlin.math.sqrt
  * Two-pass large-PDF pipeline.
  *
  * Pass 1 only uses PdfRenderer + ML Kit. Each recognized page is journaled to disk.
- * Pass 2 closes both of those engines BEFORE opening PDFBox. PDFBox loads from a
- * real file with a disk-backed ScratchFile and adds invisible Unicode text streams.
+ * Pass 2 closes both of those engines BEFORE opening PDFBox. A small batch
+ * of pages is patched into a separate working PDF with incremental revisions,
+ * and PDFBox is closed between batches to bound font and COS object memory.
  *
  * In particular, a 1GB PDF is never read into a single ByteArray or Bitmap, nor
  * do the PDF rendering and PDF editing engines remain open at the same time.
@@ -104,7 +111,7 @@ class LargePdfOcrWorker(
             System.gc()
 
             report("载入原始 PDF 以写入文字层", 0, pageCount, 92, true)
-            writeSearchablePdf(original, pagesDir, scratch, pageCount) {
+            writeSearchablePdf(original, pagesDir, scratch, jobDir, pageCount) {
                 applicationContext.contentResolver.openOutputStream(output, "wt")
                     ?: throw IOException("无法打开输出文件")
             }
@@ -242,9 +249,9 @@ class LargePdfOcrWorker(
                 val total = renderer.pageCount
                 if (total <= 0) throw IOException("PDF 没有有效页面")
 
-                val recognizer = TextRecognition.getClient(
-                    ChineseTextRecognizerOptions.Builder().build()
-                )
+                // Only start ML Kit if any page is missing. With 583 cached
+                // OCR pages, resuming export must not load the OCR model.
+                var recognizer: com.google.mlkit.vision.text.TextRecognizer? = null
                 try {
                     for (index in 0 until total) {
                         coroutineContext.ensureActive()
@@ -274,8 +281,12 @@ class LargePdfOcrWorker(
                                     PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
                                 )
 
+                                val engine = recognizer
+                                    ?: TextRecognition.getClient(
+                                        ChineseTextRecognizerOptions.Builder().build()
+                                    ).also { recognizer = it }
                                 val result = Tasks.await(
-                                    recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                                    engine.process(InputImage.fromBitmap(bitmap, 0))
                                 )
                                 val lines = result.textBlocks.flatMap { it.lines }
                                     .mapNotNull { line ->
@@ -295,7 +306,7 @@ class LargePdfOcrWorker(
                             5 + (((index + 1) * 87L) / total).toInt())
                     }
                 } finally {
-                    recognizer.close()
+                    recognizer?.close()
                 }
                 return total
             }
@@ -303,49 +314,231 @@ class LargePdfOcrWorker(
     }
 
     /**
-     * PDFBox is opened only after OCR resources have been closed.
-     * Loading from a File avoids an extra input-stream scratch copy and
-     * lets PDFBox use a buffered random-access file reader.
+     * Each batch opens PDFBox, appends a limited number of page text streams,
+     * saves a small incremental revision and closes PDFBox BEFORE the next batch.
+     *
+     * In PDFBox-Android the incremental writer internally keeps the revision
+     * in a ByteArrayOutputStream; hence we keep every batch small (16 pages).
+     * The source and all completed edits are stored on disk rather than heap.
+     *
+     * The caller's PDF remains untouched; "writing.pdf" is a private workcopy.
+     * Checkpoints survive app cancellation or process death.
      */
     private suspend fun writeSearchablePdf(
         original: File,
         pagesDir: File,
         scratch: File,
+        jobDir: File,
         expectedPages: Int,
         openOutput: () -> java.io.OutputStream
     ) {
+        val working = File(jobDir, "writing.pdf")
+        val journal = PdfExportJournal(jobDir)
+        var checkpoint = journal.recover(working)
+            ?.takeIf {
+                it.originalLength == original.length() &&
+                    it.pageCount == expectedPages
+            }
+
+        if (checkpoint == null) {
+            // Crash/inconsistent state: start PDF writing again, not OCR.
+            // Existing OcrPageJournal results will still be reused.
+            working.delete()
+            val temp = File(jobDir, "writing.pdf.part")
+            temp.delete()
+            try {
+                val required = original.length() + max(300L * 1024 * 1024, original.length() / 4)
+                if (jobDir.usableSpace < required) {
+                    throw IOException("存储空间不足：需要至少 " +
+                        (required / 1024 / 1024) + "MB 写入 PDF 工作副本")
+                }
+                report("准备可恢复的 PDF 导出副本", 0, expectedPages, 92, true)
+                FileInputStream(original).use { input ->
+                    FileOutputStream(temp).use { output ->
+                        copyStreamWithCancellation(input, output)
+                        output.fd.sync()
+                    }
+                }
+                if (temp.length() != original.length()) {
+                    throw IOException("PDF 工作副本没有完整写入")
+                }
+                if (!temp.renameTo(working)) {
+                    throw IOException("无法提交 PDF 工作副本")
+                }
+                checkpoint = journal.initialize(original.length(), expectedPages)
+            } finally {
+                temp.delete()
+            }
+        } else {
+            report("复用已提交的 PDF 文字层（到第 ${checkpoint.nextPage} 页）",
+                checkpoint.nextPage, expectedPages,
+                92 + ((checkpoint.nextPage * 6L) / expectedPages).toInt(), true)
+        }
+
+        var state = checkpoint ?: throw IOException("缺少 PDF 导出进度")
+        var batchSize = BATCH_PAGES
+        while (state.nextPage < expectedPages) {
+            coroutineContext.ensureActive()
+            if (isStopped) throw CancellationException("PDF 导出已取消")
+            val start = state.nextPage
+            val endExclusive = min(start + batchSize, expectedPages)
+            val patch = File(scratch, "batch-${start + 1}-$endExclusive.patch")
+            patch.delete()
+
+            report("写入文字层（本批 ${start + 1}-$endExclusive 页）",
+                start + 1, expectedPages,
+                92 + ((start * 6L) / expectedPages).toInt(), true)
+            try {
+                val changed = writePageBatch(
+                    working, pagesDir, scratch, patch,
+                    expectedPages, start, endExclusive
+                )
+                coroutineContext.ensureActive()
+
+                state = if (changed) {
+                    journal.append(working, patch, state, endExclusive)
+                } else {
+                    journal.advanceWithoutChanges(state, endExclusive)
+                }
+                report("已提交文字层", endExclusive, expectedPages,
+                    92 + ((endExclusive * 6L) / expectedPages).toInt(), true)
+                patch.delete()
+            } catch (oom: OutOfMemoryError) {
+                // A heap failure may also happen DURING patch append. Reconcile
+                // the on-disk transaction before any retry.
+                patch.delete()
+                state = journal.recover(working) ?: throw oom
+                if (state.nextPage > start) {
+                    // Commit succeeded; only the UI/reporting failed.
+                    continue
+                }
+                if (batchSize <= 1) throw oom
+                batchSize = max(1, batchSize / 2)
+                Log.w(TAG, "PDFBox heap pressure: retrying at $batchSize pages per batch", oom)
+                report("减小每批页数至 $batchSize 后重试",
+                    start + 1, expectedPages,
+                    92 + ((start * 6L) / expectedPages).toInt(), true)
+                System.gc()
+            } finally {
+                patch.delete()
+            }
+        }
+
+        // A completed work PDF can be re-exported without repeating OCR or
+        // text layer generation if a user-selected document provider fails.
+        report("将完整可搜索 PDF 写入目标文件", expectedPages, expectedPages, 99, true)
+        openOutput().use { target ->
+            FileInputStream(working).use { source ->
+                copyStreamWithCancellation(source, target)
+            }
+            target.flush()
+        }
+    }
+
+    /** PDFBox is fully released after each small batch. */
+    private suspend fun writePageBatch(
+        working: File,
+        pagesDir: File,
+        scratch: File,
+        patch: File,
+        expectedPages: Int,
+        start: Int,
+        endExclusive: Int
+    ): Boolean {
+        var changed = false
+        val touched = LinkedHashSet<COSDictionary>()
         PDDocument.load(
-            original,
+            working,
             MemoryUsageSetting.setupTempFileOnly().setTempDir(scratch)
         ).use { document ->
             if (document.isEncrypted) throw IOException("此版本暂不支持加密 PDF")
             if (document.numberOfPages != expectedPages) {
-                throw IOException("PDF 页面数量不一致：渲染 $expectedPages 页，编辑 " +
-                    document.numberOfPages + " 页")
+                throw IOException("PDF 页面数不一致：当前 " + document.numberOfPages +
+                    "，期望 " + expectedPages)
             }
 
             PdfSystemFontResolver(document, TAG).use { fonts ->
-                for (index in 0 until expectedPages) {
+                for (index in start until endExclusive) {
                     coroutineContext.ensureActive()
-                    if (isStopped) throw CancellationException("任务已取消")
+                    if (isStopped) throw CancellationException("PDF 导出已取消")
                     val page = OcrPageJournal.read(pagesDir, index)
-                        ?: throw IOException("第 " + (index + 1) + " 页的 OCR 记录缺失")
-                    if (page.lines.isNotEmpty()) {
-                        appendInvisibleLayer(
-                            document, document.getPage(index), page, fonts
-                        )
-                    }
-                    val pct = 92 + (((index + 1) * 5L) / expectedPages).toInt()
-                    report("写入文字层", index + 1, expectedPages, pct)
-                }
+                        ?: throw IOException("第 " + (index + 1) + " 页 OCR 缓存丢失")
+                    if (page.lines.isEmpty()) continue
 
-                coroutineContext.ensureActive()
-                report("保存完整 PDF（可能需要数分钟）", expectedPages, expectedPages, 98, true)
-                openOutput().use { stream ->
-                    document.save(stream)
-                    stream.flush()
+                    val pdfPage = document.getPage(index)
+                    appendInvisibleLayer(document, pdfPage, page, fonts)
+                    markPageForIncrementalSave(document, pdfPage, touched)
+                    changed = true
+                    report("写入文字层", index + 1, expectedPages,
+                        92 + (((index + 1) * 6L) / expectedPages).toInt())
+                }
+                if (changed) {
+                    // PDFBox-Android 2.0.27.0 does not subset fonts when
+                    // saveIncremental() is called. Without this the invisible
+                    // Unicode layer may be unreadable/search may fail.
+                    fonts.subsetFontsForIncrementalSave()
+                    val patchWriter = IncrementalPdfPatchOutputStream(
+                        patch, working.length()
+                    )
+                    patchWriter.use { writer ->
+                        document.saveIncremental(writer, touched)
+                    }
+                    patchWriter.verify()
                 }
             }
+        }
+        return changed
+    }
+
+    /**
+     * PDFBox incremental saves only dictionaries reachable along a changed
+     * page-tree path (or dictionaries explicitly forced to be written).
+     * Mark the page, its resources /Font map, each /Parent, and the catalog.
+     */
+    private fun markPageForIncrementalSave(
+        document: PDDocument,
+        page: PDPage,
+        touched: MutableSet<COSDictionary>
+    ) {
+        fun mark(dict: COSDictionary?) {
+            if (dict != null) {
+                dict.setNeedToBeUpdated(true)
+                touched.add(dict)
+            }
+        }
+
+        mark(document.documentCatalog.cosObject)
+        var node: COSDictionary? = page.cosObject
+        val visited = HashSet<COSDictionary>()
+        while (node != null && visited.add(node)) {
+            mark(node)
+            node = node.getCOSDictionary(COSName.PARENT)
+        }
+
+        val resources = page.resources?.cosObject
+        mark(resources)
+        mark(resources?.getCOSDictionary(COSName.FONT))
+
+        // /Contents is sometimes an existing indirect array, not a direct
+        // child of the page dictionary. Mark it too so PDFBox writes its
+        // new reference to the invisible text content stream.
+        val contents = page.cosObject.getDictionaryObject(COSName.CONTENTS)
+        if (contents is COSUpdateInfo) {
+            contents.setNeedToBeUpdated(true)
+        }
+    }
+
+    private suspend fun copyStreamWithCancellation(
+        input: java.io.InputStream,
+        output: java.io.OutputStream
+    ) {
+        val buffer = ByteArray(128 * 1024)
+        while (true) {
+            coroutineContext.ensureActive()
+            if (isStopped) throw CancellationException("文件复制已取消")
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count > 0) output.write(buffer, 0, count)
         }
     }
 
@@ -437,6 +630,7 @@ class LargePdfOcrWorker(
         percent: Int,
         forceNotification: Boolean = false
     ) {
+        val changedStage = activeStage != stage
         activeStage = stage
         activePage = page
         activeTotal = total
@@ -448,7 +642,8 @@ class LargePdfOcrWorker(
                 "percent" to percent
             )
         )
-        if (forceNotification || lastForegroundPage < 0 || page - lastForegroundPage >= 5) {
+        if (forceNotification || changedStage || lastForegroundPage < 0 ||
+            page - lastForegroundPage >= 5) {
             lastForegroundPage = page
             setForeground(makeForeground(
                 if (total > 0) "$stage · $page/$total" else stage,
@@ -499,5 +694,6 @@ class LargePdfOcrWorker(
         private const val CHANNEL_ID = "muocr"
         private const val NOTIFICATION_ID = 2301
         private const val MAX_OCR_PIXELS = 4_500_000L
+        private const val BATCH_PAGES = 16
     }
 }

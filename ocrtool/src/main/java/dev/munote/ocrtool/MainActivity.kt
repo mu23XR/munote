@@ -96,11 +96,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "MuOCR · 0.1.1"
+            text = "MuOCR · 0.1.2"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "大文件专用 OCR：先逐页识别，再给原始 PDF 添加不可见文字层。原页面不裁剪；出错重试可以复用已经识别的页面。"
+            text = "大文件 OCR：先逐页识别，随后每 16 页分批写入不可见文字层，分批释放内存。保留原 PDF 页面；失败后自动接着已完成的 OCR 和 PDF 导出进度处理。"
             textSize = 15f
             setPadding(0, dp(8), 0, dp(20))
         })
@@ -180,7 +180,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(cancelButton)
 
         root.addView(TextView(this).apply {
-            text = "建议：处理 1GB 文件请预留至少 3GB 存储空间，并连接充电器。先复制工作副本，再逐页识别，最后导出。出错时保留 OCR 缓存，成功后自动清理。不要清除应用数据。"
+            text = "建议：处理 1GB 文件建议预留至少 4GB 存储空间，并连接充电器。先复制工作副本，再逐页识别，最后导出。出错时保留 OCR 缓存，成功后自动清理。不要清除应用数据。"
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
