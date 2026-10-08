@@ -126,7 +126,16 @@ class MainActivity : AppCompatActivity() {
                 store.snapshot().entries.filter {
                     it.status == OcrQueueLedger.Status.CANCELLED
                 }.forEach { cancelled ->
-                    OcrQueueScheduler.cleanTaskCache(applicationContext, cancelled.id)
+                    if (cleanupInProgress.add(cancelled.id)) {
+                        try {
+                            if (store.stateOf(cancelled.id) ==
+                                OcrQueueLedger.Status.CANCELLED) {
+                                OcrQueueScheduler.cleanTaskCache(applicationContext, cancelled.id)
+                            }
+                        } finally {
+                            cleanupInProgress.remove(cancelled.id)
+                        }
+                    }
                 }
             }
         }.start()
