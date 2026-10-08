@@ -16,6 +16,9 @@ on:
       - ".github/workflows/muocr.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,3 +54,21 @@ jobs:
             MuOCR-0.1.0-test.apk
             MuOCR-0.1.0-test.apk.sha256
           retention-days: 30
+
+      - name: Publish MuOCR test release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="muocr-v0.1.0-test"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" MuOCR-0.1.0-test.apk MuOCR-0.1.0-test.apk.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" MuOCR-0.1.0-test.apk MuOCR-0.1.0-test.apk.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "MuOCR 0.1.0 test" \
+              --notes "Standalone large-PDF OCR test build. Adds an invisible Chinese OCR text layer while preserving original PDF page appearance." \
+              --prerelease
+          fi
