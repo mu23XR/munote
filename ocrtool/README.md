@@ -2,6 +2,18 @@
 
 MuOCR 是 MuNote 仓库里的独立 Android OCR 工具，用于把大型扫描 PDF 转成可搜索 PDF。
 
+## 0.1.1 修复
+
+- 0.1.0 的 PDFBox 编辑文档在逐页 OCR 期间始终驻留，可能与 ML Kit / PdfRenderer 叠加占满约 288MB 的 Android Java heap。
+- 0.1.1 改为 **两阶段、互不同时驻留的工作流程**：先渲染 + OCR + 每页 JSON checkpoint，再关闭 OCR 引擎后用 PDFBox 追加文字层。
+- PDFBox 从本地 File 随机访问，不再在 OCR 过程中持有文档对象；PDF 流使用磁盘 ScratchFile。
+- 为单独的 MuOCR 应用请求 Android largeHeap，但正确的两阶段资源隔离才是主要优化。
+- OCR 中途失败后再次选相同 PDF，已完成页面可以复用；成功时清除 1GB 工作副本和 OCR 页记录。
+- 长任务工作副本默认保存在应用专属存储。中途失败可能保留约 1GB 原件副本；请勿清除应用数据，否则 OCR checkpoint 也会丢失。
+- **重要**：没有用真实的 1GB PDF 完成端到端设备测试；需在设备上验证导出能否成功及 PDF 中文搜索结果。
+
+
+
 ## 目标
 
 - 直接导入现有 PDF；
