@@ -83,7 +83,7 @@ class MuOcrChineseFontTest {
                 }
                 val unicodeStream = PDStream(document)
                 unicodeStream.createOutputStream(COSName.FLATE_DECODE).use { out ->
-                    out.write(OcrUnicodeCMap.encode(mapping))
+                    out.write(UnicodeCMapBuilder.build(mapping))
                 }
                 font.cosObject.setItem(COSName.TO_UNICODE, unicodeStream.cosObject)
                 font.cosObject.setNeedToBeUpdated(true)
