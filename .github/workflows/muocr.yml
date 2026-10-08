@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - "main"
-      - "fix/muocr-incremental-export"
     paths:
       - "ocrtool/**"
       - "settings.gradle.kts"
@@ -16,6 +15,10 @@ on:
       - "settings.gradle.kts"
       - ".github/workflows/muocr.yml"
   workflow_dispatch:
+
+concurrency:
+  group: muocr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -54,7 +57,7 @@ jobs:
           path: |
             MuOCR-0.1.2-test.apk
             MuOCR-0.1.2-test.apk.sha256
-          retention-days: 30
+          retention-days: 3
 
       - name: Publish MuOCR test release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
