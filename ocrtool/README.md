@@ -9,6 +9,8 @@ MuOCR 是 MuNote 仓库里的独立 Android OCR 工具，用于把大型扫描 P
 - 内置经过 Git blob 校验、SIL Open Font License 1.1 允许嵌入的 Google Noto Sans SC TrueType 中文后备字体；在第一次需要中文时拷入应用私有目录。字体仅用于写入隐藏 OCR 文字层，不更改扫描 PDF 可见内容。
 - 内置中文字库使用固定 Git 提交和 SHA-1 blob 标识从官方 google/fonts 下载，构建过程中验证字节一致性。许可文本见 `src/main/assets/fonts/OFL.txt`。
 - 增加真实中文行增量保存及 PDF 文字提取回归测试，防止只有英文模拟页通过。
+- 修复 PDFBox 将同一字体轮廓的常用汉字映射为康熙部首的 Unicode 歧义（例如 `高` 被映射为 `⾼`）：记录 OCR 字符实际使用的 glyph ID 与原始 Unicode，导出时覆盖默认 ToUnicode CMap，保证普通中文搜索。
+- 在 PDFBox 增量保存前对子集字体手动写入精确的 ToUnicode 字符映射。
 - 与 0.1.1/0.1.2 OCR 缓存完全兼容；**不要卸载软件或清除应用数据**，583 页 OCR 无须重做。
 
 ## 0.1.2 修复：PDF 导出阶段 OOM
