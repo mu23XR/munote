@@ -96,11 +96,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "MuOCR · 0.1.1"
+            text = "MuOCR · 0.1.2"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "大文件专用 OCR：先逐页识别，再给原始 PDF 添加不可见文字层。原页面不裁剪；出错重试可以复用已经识别的页面。"
+            text = "大文件专用 OCR：逐页识别，按批次增量写入 PDF 隐藏文字层。失败后可以续做 OCR 和导出，原页面不裁剪。"
             textSize = 15f
             setPadding(0, dp(8), 0, dp(20))
         })
