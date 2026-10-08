@@ -49,7 +49,7 @@ class MuOcrChineseFontTest {
             val patch = File(dir, "patch.pdfdelta")
             val output = File(dir, "final.pdf")
             PDDocument.load(base).use { document ->
-                val font = PDType0Font.load(document, bundledFont(), true)
+                val font = PDType0Font.load(document, bundledFont().inputStream(), true)
                 val page = document.getPage(0)
                 PDPageContentStream(document, page,
                     PDPageContentStream.AppendMode.APPEND, true, true).use { stream ->
