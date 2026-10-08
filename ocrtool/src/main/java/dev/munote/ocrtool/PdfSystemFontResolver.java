@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -58,6 +59,7 @@ public final class PdfSystemFontResolver implements Closeable {
     private final PDDocument document;
     private final String logTag;
     private final Map<String, ResolvedFont> cache = new HashMap<>();
+    private final List<ResolvedFont> loadedFonts = new ArrayList<>();
     private final List<Closeable> openFontResources = new ArrayList<>();
 
     public PdfSystemFontResolver(PDDocument document, String logTag) {
@@ -76,6 +78,13 @@ public final class PdfSystemFontResolver implements Closeable {
         if (cached != null && supports(cached.trueTypeFont, text)) {
             return cached.pdfFont;
         }
+        // Avoid re-embedding the same system font for another OCR line.
+        for (ResolvedFont alreadyLoaded : loadedFonts) {
+            if (supports(alreadyLoaded.trueTypeFont, text)) {
+                cache.put(key, alreadyLoaded);
+                return alreadyLoaded.pdfFont;
+            }
+        }
 
         IOException lastError = null;
         for (File fontFile : findCandidateFonts(script, bold)) {
@@ -83,6 +92,7 @@ public final class PdfSystemFontResolver implements Closeable {
                 ResolvedFont font = loadMatchingFont(fontFile, text);
                 if (font != null) {
                     cache.put(key, font);
+                    loadedFonts.add(font);
                     Log.i(logTag, "PDF 字体: " + fontFile.getAbsolutePath() + " -> " + font.pdfFont.getName());
                     return font.pdfFont;
                 }
@@ -266,6 +276,22 @@ public final class PdfSystemFontResolver implements Closeable {
             if (name.contains("jp") || name.contains("japanese") || name.contains("ja")) score += 80;
         }
         return score;
+    }
+
+    /**
+     * PDDocument.saveIncremental() does not run the font-subset finalization
+     * performed by PDDocument.save(). Finalize newly embedded CJK fonts before
+     * writing the incremental PDF revision.
+     */
+    public void prepareForIncrementalSave() throws IOException {
+        Set<PDFont> seen = new HashSet<>();
+        for (ResolvedFont entry : loadedFonts) {
+            PDFont font = entry.pdfFont;
+            if (!seen.add(font)) continue;
+            if (font instanceof PDType0Font && ((PDType0Font) font).willBeSubset()) {
+                ((PDType0Font) font).subset();
+            }
+        }
     }
 
     @Override
