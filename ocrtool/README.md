@@ -2,6 +2,15 @@
 
 MuOCR 是 MuNote 仓库里的独立 Android OCR 工具，用于把大型扫描 PDF 转成可搜索 PDF。
 
+## 0.1.3 修复：中文字体没有 glyf 表
+
+- 0.1.2 在 583 页教材第 16 页保存中文字体子集时失败：`OTF fonts do not have a glyf table`。这是 Android 系统 CJK OTF/TTC 字体采用 CFF 轮廓，而 PDFBox-Android 的 TrueType 子集化要求 `glyf` 与 `loca`。
+- 不再仅依赖文件扩展名/字体覆盖率判断：候选字库必须包含 TrueType `glyf` 和 `loca`，并且不含 `CFF `。
+- 内置经过 Git blob 校验、SIL Open Font License 1.1 允许嵌入的 Google Noto Sans SC TrueType 中文后备字体；在第一次需要中文时拷入应用私有目录。字体仅用于写入隐藏 OCR 文字层，不更改扫描 PDF 可见内容。
+- 内置中文字库使用固定 Git 提交和 SHA-1 blob 标识从官方 google/fonts 下载，构建过程中验证字节一致性。许可文本见 `src/main/assets/fonts/OFL.txt`。
+- 增加真实中文行增量保存及 PDF 文字提取回归测试，防止只有英文模拟页通过。
+- 与 0.1.1/0.1.2 OCR 缓存完全兼容；**不要卸载软件或清除应用数据**，583 页 OCR 无须重做。
+
 ## 0.1.2 修复：PDF 导出阶段 OOM
 
 - 0.1.1 在 583 页扫描教材上已成功完成 OCR，但第 303 页 **写入文字层** 时仍出现 OOM（导出过程中 PDFBox 的字体和页面对象累计增长）。
