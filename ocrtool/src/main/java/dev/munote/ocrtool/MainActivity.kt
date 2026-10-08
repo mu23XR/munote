@@ -37,6 +37,8 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             persist(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             inputUri = uri
+            getSharedPreferences("muocr", MODE_PRIVATE).edit()
+                .putString("input_uri", uri.toString()).apply()
             fileLabel.text = displayName(uri)
             startButton.isEnabled = true
         }
@@ -71,6 +73,16 @@ class MainActivity : AppCompatActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        getSharedPreferences("muocr", MODE_PRIVATE)
+            .getString("input_uri", null)?.let { saved ->
+                runCatching {
+                    val restored = Uri.parse(saved)
+                    inputUri = restored
+                    fileLabel.text = displayName(restored)
+                    startButton.isEnabled = true
+                }
+            }
+
         restoreRunningWork()
     }
 
@@ -84,11 +96,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "MuOCR"
+            text = "MuOCR · 0.1.1"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "给现有 PDF 逐页加入不可见中文 OCR 文字层。原页面不裁剪、不重采样。针对超大扫描 PDF 采用单页处理和磁盘缓存。"
+            text = "大文件专用 OCR：先逐页识别，再给原始 PDF 添加不可见文字层。原页面不裁剪；出错重试可以复用已经识别的页面。"
             textSize = 15f
             setPadding(0, dp(8), 0, dp(20))
         })
@@ -168,7 +180,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(cancelButton)
 
         root.addView(TextView(this).apply {
-            text = "建议：处理 1GB 文件时保持至少 3GB 可用存储空间并接电。OCR 过程中可以切到后台，任务由 WorkManager 前台服务继续执行。"
+            text = "建议：处理 1GB 文件请预留至少 3GB 存储空间，并连接充电器。先复制工作副本，再逐页识别，最后导出。出错时保留 OCR 缓存，成功后自动清理。不要清除应用数据。"
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -232,7 +244,9 @@ class MainActivity : AppCompatActivity() {
 
             if (info.state == WorkInfo.State.FAILED) {
                 val error = info.outputData.getString("error")
-                if (!error.isNullOrBlank()) statusLabel.text = "失败：$error"
+                if (!error.isNullOrBlank()) {
+                    statusLabel.text = "失败：$error\nOCR 完成页已缓存在设备中，再次运行可以续做。"
+                }
             }
             if (info.state == WorkInfo.State.SUCCEEDED) {
                 statusLabel.text = "完成：已导出可搜索 PDF"
