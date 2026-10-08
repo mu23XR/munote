@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "MuOCR · 0.1.3"
+            text = "MuOCR · 1.0.0"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
