@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - "main"
-      - "fix/muocr-chunked-incremental-pdf"
     paths:
       - "ocrtool/**"
       - "settings.gradle.kts"
@@ -19,6 +18,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: muocr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -52,6 +55,7 @@ jobs:
           sha256sum MuOCR-0.1.2-test.apk > MuOCR-0.1.2-test.apk.sha256
 
       - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
         with:
           name: MuOCR-Android-0.1.2
           path: |
