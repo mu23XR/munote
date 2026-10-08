@@ -9,6 +9,7 @@
     <application
         android:name=".MuOcrApplication"
         android:allowBackup="false"
+        android:largeHeap="true"
         android:label="MuOCR"
         android:theme="@style/Theme.MuOCR">
 
