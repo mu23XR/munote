@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.work.WorkManager
+import java.util.Collections
 import java.util.concurrent.TimeUnit
 
 /**
@@ -32,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private var outputTree: String = ""
     private var selectedQuality = 2200
     private var openFilesAfterFolder = false
+    private val cleanupInProgress = Collections.synchronizedSet(mutableSetOf<String>())
 
     private lateinit var folderText: TextView
     private lateinit var summaryText: TextView
@@ -117,6 +119,17 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (::taskContainer.isInitialized) refreshQueue()
+        // Continue best-effort cleanup of cancelled task scratch files even
+        // if the app process died part-way through a previous cancellation.
+        Thread {
+            runCatching {
+                store.snapshot().entries.filter {
+                    it.status == OcrQueueLedger.Status.CANCELLED
+                }.forEach { cancelled ->
+                    OcrQueueScheduler.cleanTaskCache(applicationContext, cancelled.id)
+                }
+            }
+        }.start()
         // Recovery: Android may have stopped or force-killed the worker. If
         // WorkManager no longer owns a running supervisor, append another.
         Thread {
@@ -306,10 +319,10 @@ class MainActivity : AppCompatActivity() {
             when (entry.status) {
                 OcrQueueLedger.Status.RUNNING, OcrQueueLedger.Status.WAITING -> {
                     actions.addView(action("暂停") { store.pause(entry.id); refreshQueue() })
-                    actions.addView(action("取消") { store.cancel(entry.id); refreshQueue() })
+                    actions.addView(action("取消") { cancelEntry(entry.id) })
                 }
                 OcrQueueLedger.Status.PAUSING -> {
-                    actions.addView(action("取消") { store.cancel(entry.id); refreshQueue() })
+                    actions.addView(action("取消") { cancelEntry(entry.id) })
                 }
                 OcrQueueLedger.Status.PAUSED -> {
                     actions.addView(action("继续") {
@@ -317,10 +330,14 @@ class MainActivity : AppCompatActivity() {
                         if (!store.snapshot().pausedAll) OcrQueueScheduler.wake(this)
                         refreshQueue()
                     })
-                    actions.addView(action("取消") { store.cancel(entry.id); refreshQueue() })
+                    actions.addView(action("取消") { cancelEntry(entry.id) })
                 }
                 OcrQueueLedger.Status.FAILED, OcrQueueLedger.Status.CANCELLED -> {
                     actions.addView(action("重试") {
+                        if (cleanupInProgress.contains(entry.id)) {
+                            toast("正在清理任务缓存，请稍后重试")
+                            return@action
+                        }
                         store.retry(entry.id)
                         if (!store.snapshot().pausedAll) OcrQueueScheduler.wake(this)
                         refreshQueue()
@@ -350,7 +367,41 @@ class MainActivity : AppCompatActivity() {
         if (::scroll.isInitialized) scroll.post { scroll.scrollTo(0, y) }
     }
 
+    private fun cancelEntry(id: String) {
+        val previous = store.stateOf(id)
+        val uri = store.snapshot().entries.find { it.id == id }?.outputUri ?: ""
+        store.cancel(id)
+        refreshQueue()
+
+        // Running work is cleaned up by the worker after it exits safely.
+        // Paused or waiting tasks have no active PDFBox/OCR resources, so
+        // clean their private work dir off the UI thread right away.
+        if (previous in setOf(
+                OcrQueueLedger.Status.PAUSED,
+                OcrQueueLedger.Status.FAILED,
+                OcrQueueLedger.Status.WAITING
+            )) {
+            cleanupInProgress.add(id)
+            Thread {
+                try {
+                    OcrQueueScheduler.deleteIncompleteOutput(applicationContext, uri)
+                    OcrQueueScheduler.cleanTaskCache(applicationContext, id)
+                    if (store.stateOf(id) == OcrQueueLedger.Status.CANCELLED) {
+                        store.clearOutput(id)
+                    }
+                } finally {
+                    cleanupInProgress.remove(id)
+                    runOnUiThread { if (!isFinishing) refreshQueue() }
+                }
+            }.start()
+        }
+    }
+
     private fun removeEntry(id: String) {
+        if (cleanupInProgress.contains(id)) {
+            toast("请等任务缓存清理完成后再移除")
+            return
+        }
         if (store.remove(id)) {
             // Deleting a leftover 1GB task scratch directory must not block UI.
             Thread { OcrQueueScheduler.cleanTaskCache(applicationContext, id) }.start()
