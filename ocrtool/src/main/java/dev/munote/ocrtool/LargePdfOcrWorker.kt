@@ -69,6 +69,7 @@ class LargePdfOcrWorker(
     private var activeTotal = 0
     private var lastForegroundPage = -1
     private var currentTaskId: String? = null
+    private var currentTaskName: String? = null
     private var lastDirectivePoll = 0L
 
     private class TaskPaused : RuntimeException("Task paused")
@@ -114,6 +115,7 @@ class LargePdfOcrWorker(
             coroutineContext.ensureActive()
             val entry = ledger.claimNext() ?: return Result.success()
             currentTaskId = entry.id
+            currentTaskName = entry.name
             lastForegroundPage = -1
             lastDirectivePoll = 0L
 
@@ -166,6 +168,10 @@ class LargePdfOcrWorker(
                     error.message ?: error.javaClass.simpleName)
             } finally {
                 currentTaskId = null
+                currentTaskName = null
+                // Never keep a previous large document's temporary PDFBox/
+                // font objects alive unnecessarily while starting the next.
+                System.gc()
             }
         }
     }
@@ -839,7 +845,7 @@ class LargePdfOcrWorker(
         }
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("MuOCR")
+            .setContentTitle(currentTaskName?.let { "MuOCR · " + it.take(36) } ?: "MuOCR")
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
