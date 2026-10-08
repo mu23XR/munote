@@ -249,9 +249,9 @@ class LargePdfOcrWorker(
                 val total = renderer.pageCount
                 if (total <= 0) throw IOException("PDF 没有有效页面")
 
-                val recognizer = TextRecognition.getClient(
-                    ChineseTextRecognizerOptions.Builder().build()
-                )
+                // Only start ML Kit if any page is missing. With 583 cached
+                // OCR pages, resuming export must not load the OCR model.
+                var recognizer: com.google.mlkit.vision.text.TextRecognizer? = null
                 try {
                     for (index in 0 until total) {
                         coroutineContext.ensureActive()
@@ -281,8 +281,12 @@ class LargePdfOcrWorker(
                                     PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
                                 )
 
+                                val engine = recognizer
+                                    ?: TextRecognition.getClient(
+                                        ChineseTextRecognizerOptions.Builder().build()
+                                    ).also { recognizer = it }
                                 val result = Tasks.await(
-                                    recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                                    engine.process(InputImage.fromBitmap(bitmap, 0))
                                 )
                                 val lines = result.textBlocks.flatMap { it.lines }
                                     .mapNotNull { line ->
@@ -302,7 +306,7 @@ class LargePdfOcrWorker(
                             5 + (((index + 1) * 87L) / total).toInt())
                     }
                 } finally {
-                    recognizer.close()
+                    recognizer?.close()
                 }
                 return total
             }
@@ -400,9 +404,14 @@ class LargePdfOcrWorker(
                     92 + ((endExclusive * 6L) / expectedPages).toInt(), true)
                 patch.delete()
             } catch (oom: OutOfMemoryError) {
-                // No changes to writing.pdf were committed before patch creation.
-                // The journal rolls back interrupted on-disk appends on retry.
+                // A heap failure may also happen DURING patch append. Reconcile
+                // the on-disk transaction before any retry.
                 patch.delete()
+                state = journal.recover(working) ?: throw oom
+                if (state.nextPage > start) {
+                    // Commit succeeded; only the UI/reporting failed.
+                    continue
+                }
                 if (batchSize <= 1) throw oom
                 batchSize = max(1, batchSize / 2)
                 Log.w(TAG, "PDFBox heap pressure: retrying at $batchSize pages per batch", oom)
