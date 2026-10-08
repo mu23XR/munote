@@ -82,7 +82,8 @@ class LargePdfOcrWorker(
             val total = min(renderer.pageCount, document.numberOfPages)
             if (total <= 0) return@withContext failure("PDF 没有页面")
 
-            fonts = PdfSystemFontResolver(document, "MuOCRFont")
+            val fontResolver = PdfSystemFontResolver(document, "MuOCRFont")
+            fonts = fontResolver
             for (pageIndex in 0 until total) {
                     coroutineContext.ensureActive()
                     if (isStopped) return@withContext failure("任务已取消")
@@ -128,7 +129,7 @@ class LargePdfOcrWorker(
                                     lines,
                                     bitmap.width,
                                     bitmap.height,
-                                    fonts
+                                    fontResolver
                                 )
                             }
                         } finally {
