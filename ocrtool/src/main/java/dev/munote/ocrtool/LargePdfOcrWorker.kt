@@ -174,8 +174,12 @@ class LargePdfOcrWorker(
     }
 
     private suspend fun ensureSourceCopy(uri: Uri, sourceFile: File, expectedSize: Long) {
+        val hasIncrementalState =
+            File(sourceFile.parentFile, "incremental_export_progress.json").isFile ||
+            File(sourceFile.parentFile, "incremental_append_transaction.json").isFile
         if (sourceFile.isFile && sourceFile.length() > 0 &&
-            (expectedSize <= 0L || sourceFile.length() == expectedSize)
+            (expectedSize <= 0L || sourceFile.length() == expectedSize ||
+                (hasIncrementalState && sourceFile.length() >= expectedSize))
         ) {
             report("复用上次的 PDF 工作副本", 0, 0, 5, true)
             return
