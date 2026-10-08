@@ -227,8 +227,8 @@ class MainActivity : AppCompatActivity() {
                 else -> info.state.name
             }
 
-            val pct = if (total > 0) ((page * 100L) / total).toInt() else
-                info.progress.getInt("percent", 0)
+            val pct = info.progress.getInt("percent",
+                if (total > 0) ((page * 100L) / total).toInt() else 0)
 
             progressBar.visibility = if (info.state.isFinished) View.GONE else View.VISIBLE
             progressBar.progress = pct.coerceIn(0, 100)
