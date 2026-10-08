@@ -55,8 +55,8 @@ android {
         applicationId = "dev.munote.ocrtool"
         minSdk = 29
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.0.0"
+        versionCode = 6
+        versionName = "1.1.0"
     }
 
     signingConfigs {
@@ -94,6 +94,8 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("com.google.android.material:material:1.13.0")
     implementation("androidx.work:work-runtime-ktx:2.10.4")
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     testImplementation("junit:junit:4.13.2")
