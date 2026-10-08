@@ -41,6 +41,11 @@ jobs:
       - name: Test disk-backed PDF incremental writer
         run: gradle :ocrtool:testDebugUnitTest --stacktrace
 
+      - name: Print failed test stack traces
+        if: failure()
+        run: |
+          find ocrtool/build/test-results/testDebugUnitTest -type f -name '*.xml' -print -exec grep -A 45 -B 3 '<failure' {} \; || true
+
       - name: Build MuOCR APK
         run: gradle :ocrtool:assembleDebug --stacktrace
 
