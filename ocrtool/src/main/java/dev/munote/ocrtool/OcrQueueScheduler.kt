@@ -57,17 +57,8 @@ internal object OcrQueueScheduler {
         if (!tree.isDirectory || !tree.canWrite()) {
             throw IOException("输出文件夹无写入权限，请重新选择")
         }
-        val base = task.name.substringBeforeLast('.', task.name)
-            .replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_")
-            .trim().take(85).ifBlank { "document" }
-        val existing = tree.listFiles().mapNotNull { it.name }.toHashSet()
-        var suffix = 0
-        var name: String
-        do {
-            name = if (suffix == 0) "${base}_OCR.pdf"
-                else "${base}_OCR_${suffix + 1}.pdf"
-            suffix++
-        } while (name in existing)
+        val name = OcrOutputNaming.choose(task.name,
+            tree.listFiles().mapNotNull { it.name })
 
         val created = tree.createFile("application/pdf", name)
             ?: throw IOException("无法在输出文件夹创建 PDF")
