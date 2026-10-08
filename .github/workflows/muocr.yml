@@ -1,0 +1,53 @@
+name: MuOCR Android
+
+on:
+  push:
+    branches:
+      - "feat/muocr-large-pdf"
+    paths:
+      - "ocrtool/**"
+      - "settings.gradle.kts"
+      - ".github/workflows/muocr.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "ocrtool/**"
+      - "settings.gradle.kts"
+      - ".github/workflows/muocr.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build MuOCR APK
+        run: gradle :ocrtool:assembleDebug --stacktrace
+
+      - name: Verify APK
+        run: |
+          set -euo pipefail
+          APK="ocrtool/build/outputs/apk/debug/ocrtool-debug.apk"
+          test -f "$APK"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$APKSIGNER" verify --print-certs "$APK"
+          cp "$APK" MuOCR-0.1.0-test.apk
+          sha256sum MuOCR-0.1.0-test.apk > MuOCR-0.1.0-test.apk.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MuOCR-Android
+          path: |
+            MuOCR-0.1.0-test.apk
+            MuOCR-0.1.0-test.apk.sha256
+          retention-days: 30
