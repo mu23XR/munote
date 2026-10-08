@@ -192,7 +192,7 @@ class LargePdfOcrWorker(
         val scratch = File(jobDir, "scratch")
         var completed = false
 
-        try {
+        return try {
             if (!jobDir.exists() && !jobDir.mkdirs()) {
                 throw IOException("无法建立工作目录，检查存储空间")
             }
