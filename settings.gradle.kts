@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "MuNote"
 include(":app")
+include(":ocrtool")
