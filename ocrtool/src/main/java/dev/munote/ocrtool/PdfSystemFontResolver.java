@@ -390,7 +390,7 @@ public final class PdfSystemFontResolver implements Closeable {
             if (entry.getValue().isEmpty()) continue;
             PDStream stream = new PDStream(document);
             try (OutputStream out = stream.createOutputStream(COSName.FLATE_DECODE)) {
-                out.write(UnicodeCMapBuilder.build(entry.getValue()));
+                out.write(OcrUnicodeCMap.encode(entry.getValue()));
             }
             entry.getKey().getCOSObject().setItem(COSName.TO_UNICODE, stream);
             entry.getKey().getCOSObject().setNeedToBeUpdated(true);
