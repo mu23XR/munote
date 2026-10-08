@@ -10,6 +10,8 @@ import com.tom_roush.fontbox.ttf.TTFParser;
 import com.tom_roush.fontbox.ttf.TrueTypeCollection;
 import com.tom_roush.fontbox.ttf.TrueTypeFont;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.pdmodel.common.PDStream;
+import com.tom_roush.pdfbox.cos.COSName;
 import com.tom_roush.pdfbox.pdmodel.font.PDFont;
 import com.tom_roush.pdfbox.pdmodel.font.PDType0Font;
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font;
@@ -18,12 +20,14 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -69,6 +73,8 @@ public final class PdfSystemFontResolver implements Closeable {
     // PDFBox-Android 2.0.27.0 does NOT subset fonts in saveIncremental().
     // Track all fonts (including older cache entries) and subset explicitly.
     private final List<PDFont> fontsForSubset = new ArrayList<>();
+    private final Map<PDFont, Map<Integer, Integer>> originalUnicodeByGlyph =
+            new LinkedHashMap<>();
     private boolean subsetCompleted = false;
 
     public PdfSystemFontResolver(PDDocument document, String logTag, Context context) {
@@ -86,6 +92,7 @@ public final class PdfSystemFontResolver implements Closeable {
         String key = script + (bold ? "-bold" : "-regular");
         ResolvedFont cached = cache.get(key);
         if (cached != null && supports(cached.trueTypeFont, text)) {
+            rememberUnicode(cached, text);
             return cached.pdfFont;
         }
 
@@ -109,6 +116,7 @@ public final class PdfSystemFontResolver implements Closeable {
                 ResolvedFont font = loadMatchingFont(fontFile, text);
                 if (font != null) {
                     cache.put(key, font);
+                    rememberUnicode(font, text);
                     Log.i(logTag, "PDF 字体: " + fontFile.getAbsolutePath() + " -> " + font.pdfFont.getName());
                     return font.pdfFont;
                 }
@@ -348,6 +356,49 @@ public final class PdfSystemFontResolver implements Closeable {
     }
 
     /**
+     * Identity-H text streams refer to the original glyph IDs, not subset glyph
+     * indices. Save the real OCR Unicode character for every glyph ID. PDFBox's
+     * default ToUnicode builder chooses the first Unicode alias for that glyph
+     * and can produce Kangxi radicals instead of common Chinese characters.
+     */
+    private void rememberUnicode(ResolvedFont resolved, String text) throws IOException {
+        CmapLookup cmap = resolved.trueTypeFont.getUnicodeCmapLookup(false);
+        if (cmap == null) return;
+        Map<Integer, Integer> mapping = originalUnicodeByGlyph.computeIfAbsent(
+                resolved.pdfFont, font -> new LinkedHashMap<>());
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            offset += Character.charCount(cp);
+            int gid = cmap.getGlyphId(cp);
+            if (gid <= 0) continue;
+            Integer previous = mapping.get(gid);
+            if (previous == null ||
+                    (isRadicalAlias(previous) && !isRadicalAlias(cp))) {
+                mapping.put(gid, cp);
+            }
+        }
+    }
+
+    private static boolean isRadicalAlias(int cp) {
+        return cp >= 0x2E80 && cp <= 0x2FDF;
+    }
+
+    private void writeExactToUnicodeMaps() throws IOException {
+        for (Map.Entry<PDFont, Map<Integer, Integer>> entry :
+                originalUnicodeByGlyph.entrySet()) {
+            if (entry.getValue().isEmpty()) continue;
+            // PDFBox's built-in ToUnicode is not enough for shared CJK glyphs.
+            // Replace it with the Unicode codepoints actually written by OCR.
+            PDStream stream = new PDStream(document);
+            try (OutputStream out = stream.createOutputStream(COSName.FLATE_DECODE)) {
+                out.write(UnicodeCMapBuilder.build(entry.getValue()));
+            }
+            entry.getKey().getCOSObject().setItem(COSName.TO_UNICODE, stream);
+            entry.getKey().getCOSObject().setNeedToBeUpdated(true);
+        }
+    }
+
+    /**
      * PDFBox-Android inherited a PDFBox bug: saveIncremental() doesn't invoke
      * PDType0Font.subset(). Without this, Chinese fonts may be unusable in the
      * exported PDF despite a successful write.
@@ -361,6 +412,7 @@ public final class PdfSystemFontResolver implements Closeable {
                 font.subset();
             }
         }
+        writeExactToUnicodeMaps();
         subsetCompleted = true;
     }
 
