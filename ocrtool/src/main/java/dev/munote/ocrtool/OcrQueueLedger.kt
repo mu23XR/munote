@@ -144,6 +144,10 @@ internal class OcrQueueLedger(private val manifest: File) {
         entry.status = when (entry.status) {
             Status.PAUSING -> Status.PAUSED
             Status.CANCELLING -> Status.CANCELLED
+            // Pause-all can be released while the active task is shutting
+            // down. Queue it again instead of leaving it unexpectedly paused.
+            Status.RUNNING -> if (status == Status.PAUSED && !state.pausedAll)
+                Status.WAITING else status
             else -> status
         }
         if (entry.status == Status.DONE) {
@@ -213,9 +217,17 @@ internal class OcrQueueLedger(private val manifest: File) {
     fun resumeAll() = edit { state ->
         state.pausedAll = false
         state.entries.forEach { entry ->
-            if (entry.status == Status.PAUSED) {
-                entry.status = Status.WAITING
-                entry.stage = "等待续做"
+            when (entry.status) {
+                Status.PAUSED -> {
+                    entry.status = Status.WAITING
+                    entry.stage = "等待续做"
+                }
+                Status.PAUSING -> {
+                    // The worker might not have observed the pause yet.
+                    // Undo the stop request; if it has already exited,
+                    // finish(PAUSED) will requeue this task.
+                    entry.status = Status.RUNNING
+                }
             }
         }
     }
