@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - "main"
-      - "fix/muocr-large-pdf-oom"
+      - "fix/muocr-incremental-export"
     paths:
       - "ocrtool/**"
       - "settings.gradle.kts"
@@ -45,15 +45,15 @@ jobs:
           test -f "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --print-certs "$APK"
-          cp "$APK" MuOCR-0.1.1-test.apk
-          sha256sum MuOCR-0.1.1-test.apk > MuOCR-0.1.1-test.apk.sha256
+          cp "$APK" MuOCR-0.1.2-test.apk
+          sha256sum MuOCR-0.1.2-test.apk > MuOCR-0.1.2-test.apk.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MuOCR-Android-0.1.1
+          name: MuOCR-Android-0.1.2
           path: |
-            MuOCR-0.1.1-test.apk
-            MuOCR-0.1.1-test.apk.sha256
+            MuOCR-0.1.2-test.apk
+            MuOCR-0.1.2-test.apk.sha256
           retention-days: 30
 
       - name: Publish MuOCR test release
@@ -62,14 +62,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="muocr-v0.1.1-test"
+          TAG="muocr-v0.1.2-test"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists. Published test APKs must never be overwritten."
             exit 1
           fi
-          gh release create "$TAG" MuOCR-0.1.1-test.apk MuOCR-0.1.1-test.apk.sha256 \
+          gh release create "$TAG" MuOCR-0.1.2-test.apk MuOCR-0.1.2-test.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "MuOCR 0.1.1 test — large PDF OOM fix" \
-            --notes "Two-stage OCR with on-disk page checkpoints and separate disk-backed PDF writing. Fixes Java heap exhaustion seen in MuOCR 0.1.0. 1GB real-file validation is still pending." \
+            --title "MuOCR 0.1.2 test - incremental large PDF export" \
+            --notes "Bounded 12-page incremental PDF export with crash-safe append journal and resumable OCR checkpoints. Fixes export-heap exhaustion observed at 303/583 pages in MuOCR 0.1.1. Device validation for the actual 1GB book remains pending." \
             --prerelease
