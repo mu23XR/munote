@@ -66,8 +66,15 @@ internal class IncrementalOcrPdfExporter(
 
             val before = workingPdf.length()
             check(before == cp.size)
-            stageIncrement(begin, end, before)
+            val changed = stageIncrement(begin, end, before)
             coroutineContext.ensureActive()
+            if (!changed) {
+                // A batch of entirely blank pages needs no PDF revision.
+                writeCheckpoint(Checkpoint(end, before))
+                cp = Checkpoint(end, before)
+                report("跳过没有文字的页面批次", end, pageCount, progress(end))
+                continue
+            }
 
             val deltaSize = deltaFile.length()
             if (deltaSize <= 0) throw IOException("第 " + (begin + 1) + " 页开始的 PDF 增量为空")
@@ -109,11 +116,12 @@ internal class IncrementalOcrPdfExporter(
     private fun progress(completed: Int): Int =
         92 + ((completed * 6L) / pageCount).toInt()
 
-    private suspend fun stageIncrement(begin: Int, end: Int, oldSize: Long) {
+    private suspend fun stageIncrement(begin: Int, end: Int, oldSize: Long): Boolean {
         if (deltaFile.exists() && !deltaFile.delete()) {
             throw IOException("无法清理上一批残留增量")
         }
         val memory = MemoryUsageSetting.setupTempFileOnly().setTempDir(scratchDir)
+        var changed = false
         try {
             PDDocument.load(workingPdf, memory).use { doc ->
                 if (doc.isEncrypted) throw IOException("暂不支持加密 PDF")
@@ -130,26 +138,29 @@ internal class IncrementalOcrPdfExporter(
                             val page = doc.getPage(index)
                             appendInvisibleLayer(doc, page, ocr, fonts)
                             markForIncrementalSave(doc, page)
+                            changed = true
                         }
                     }
 
                     // PDFBox-Android's saveIncremental() does NOT call
                     // PDDocument.save()'s font.subset() loop. Embedded CJK
                     // fonts must be finalized before incremental serialization.
-                    fonts.prepareForIncrementalSave()
-
-                    FileOutputStream(deltaFile).use { fileOut ->
-                        val tailOnly = DeltaOnlyOutputStream(fileOut, oldSize)
-                        doc.saveIncremental(tailOnly)
-                        if (tailOnly.bytesRemaining != 0L) {
-                            throw IOException("PDFBox 增量序列化没有写完原文件部分")
+                    if (changed) {
+                        fonts.prepareForIncrementalSave()
+                        FileOutputStream(deltaFile).use { fileOut ->
+                            val tailOnly = DeltaOnlyOutputStream(fileOut, oldSize)
+                            doc.saveIncremental(tailOnly)
+                            if (tailOnly.bytesRemaining != 0L) {
+                                throw IOException("PDFBox 增量序列化没有写完原文件部分")
+                            }
                         }
                     }
                 }
             }
-            if (deltaFile.length() < 10L) {
+            if (changed && deltaFile.length() < 10L) {
                 throw IOException("PDFBox 未产生有效 PDF 增量")
             }
+            return changed
         } catch (t: Throwable) {
             deltaFile.delete()
             throw t
