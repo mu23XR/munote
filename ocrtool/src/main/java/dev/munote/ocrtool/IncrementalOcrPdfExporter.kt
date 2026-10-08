@@ -8,9 +8,6 @@ import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
-import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
-import com.tom_roush.pdfbox.pdmodel.graphics.state.RenderingMode
-import com.tom_roush.pdfbox.util.Matrix
 import kotlinx.coroutines.ensureActive
 import org.json.JSONObject
 import java.io.File
@@ -19,7 +16,6 @@ import java.io.IOException
 import java.io.OutputStream
 import java.io.RandomAccessFile
 import kotlin.coroutines.coroutineContext
-import kotlin.math.max
 import kotlin.math.min
 
 /**
@@ -129,30 +125,31 @@ internal class IncrementalOcrPdfExporter(
                     throw IOException("PDF 页数变化：" + doc.numberOfPages + "，OCR 记录 " + pageCount)
                 }
 
-                PdfSystemFontResolver(doc, TAG).use { fonts ->
-                    for (index in begin until end) {
-                        coroutineContext.ensureActive()
-                        val ocr = OcrPageJournal.read(pagesDir, index)
-                            ?: throw IOException("缺少第 " + (index + 1) + " 页 OCR 缓存")
-                        if (ocr.lines.isNotEmpty()) {
-                            val page = doc.getPage(index)
-                            appendInvisibleLayer(doc, page, ocr, fonts)
-                            markForIncrementalSave(doc, page)
-                            changed = true
-                        }
-                    }
+                val allPages = LinkedHashMap<Int, OcrPageJournal.Page>()
+                for (index in begin until end) {
+                    coroutineContext.ensureActive()
+                    val ocr = OcrPageJournal.read(pagesDir, index)
+                        ?: throw IOException("缺少第 " + (index + 1) + " 页 OCR 缓存")
+                    if (ocr.lines.isNotEmpty()) allPages[index] = ocr
+                }
 
-                    // PDFBox-Android's saveIncremental() does NOT call
-                    // PDDocument.save()'s font.subset() loop. Embedded CJK
-                    // fonts must be finalized before incremental serialization.
-                    if (changed) {
-                        fonts.prepareForIncrementalSave()
-                        FileOutputStream(deltaFile).use { fileOut ->
-                            val tailOnly = DeltaOnlyOutputStream(fileOut, oldSize)
-                            doc.saveIncremental(tailOnly)
-                            if (tailOnly.bytesRemaining != 0L) {
-                                throw IOException("PDFBox 增量序列化没有写完原文件部分")
-                            }
+                if (allPages.isNotEmpty()) {
+                    val textLayer = InvisibleUnicodeTextLayer(
+                        doc, allPages.values, begin
+                    )
+                    for ((index, ocr) in allPages) {
+                        coroutineContext.ensureActive()
+                        val page = doc.getPage(index)
+                        textLayer.append(page, ocr)
+                        markForIncrementalSave(doc, page)
+                    }
+                    changed = true
+
+                    FileOutputStream(deltaFile).use { fileOut ->
+                        val tailOnly = DeltaOnlyOutputStream(fileOut, oldSize)
+                        doc.saveIncremental(tailOnly)
+                        if (tailOnly.bytesRemaining != 0L) {
+                            throw IOException("PDFBox 增量序列化没有写完原文件部分")
                         }
                     }
                 }
@@ -187,61 +184,6 @@ internal class IncrementalOcrPdfExporter(
         }
         doc.documentCatalog.pages.cosObject.setNeedToBeUpdated(true)
         doc.documentCatalog.cosObject.setNeedToBeUpdated(true)
-    }
-
-    private fun appendInvisibleLayer(
-        doc: PDDocument,
-        page: PDPage,
-        ocr: OcrPageJournal.Page,
-        fonts: PdfSystemFontResolver
-    ) {
-        val crop = page.cropBox ?: page.mediaBox ?: return
-        val rot = ((page.rotation % 360) + 360) % 360
-        val width = if (rot == 90 || rot == 270) crop.height else crop.width
-        val height = if (rot == 90 || rot == 270) crop.width else crop.height
-        val m = when (rot) {
-            90 -> floatArrayOf(0f, 1f, -1f, 0f, crop.lowerLeftX + crop.width, crop.lowerLeftY)
-            180 -> floatArrayOf(-1f, 0f, 0f, -1f,
-                crop.lowerLeftX + crop.width, crop.lowerLeftY + crop.height)
-            270 -> floatArrayOf(0f, -1f, 1f, 0f, crop.lowerLeftX, crop.lowerLeftY + crop.height)
-            else -> floatArrayOf(1f, 0f, 0f, 1f, crop.lowerLeftX, crop.lowerLeftY)
-        }
-        val sx = width / ocr.width.toFloat()
-        val sy = height / ocr.height.toFloat()
-
-        PDPageContentStream(
-            doc, page, PDPageContentStream.AppendMode.APPEND, true, true
-        ).use { out ->
-            out.saveGraphicsState()
-            try {
-                out.transform(Matrix(m[0], m[1], m[2], m[3], m[4], m[5]))
-                for (line in ocr.lines) {
-                    val box = line.rect
-                    val boxWidth = max(0.5f, box.width() * sx)
-                    val boxHeight = max(1f, box.height() * sy)
-                    val x = box.left * sx
-                    val y = height - box.bottom * sy + boxHeight * 0.12f
-                    val font = fonts.resolve(line.text, false)
-                    val fontSize = (boxHeight * 0.88f).coerceIn(1f, 96f)
-                    val naturalWidth = font.getStringWidth(line.text) * fontSize / 1000f
-                    if (naturalWidth <= 0f) continue
-                    val horizontal = (boxWidth / naturalWidth * 100f).coerceIn(5f, 1000f)
-
-                    out.beginText()
-                    try {
-                        out.setRenderingMode(RenderingMode.NEITHER)
-                        out.setFont(font, fontSize)
-                        out.setHorizontalScaling(horizontal)
-                        out.newLineAtOffset(x, y)
-                        out.showText(line.text)
-                    } finally {
-                        out.endText()
-                    }
-                }
-            } finally {
-                out.restoreGraphicsState()
-            }
-        }
     }
 
     /**
