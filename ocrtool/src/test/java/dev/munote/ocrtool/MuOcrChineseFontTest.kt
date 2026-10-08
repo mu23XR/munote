@@ -2,9 +2,11 @@ package dev.munote.ocrtool
 
 import org.apache.fontbox.ttf.TTFParser
 import org.apache.pdfbox.cos.COSDictionary
+import org.apache.pdfbox.cos.COSName
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.pdmodel.PDPage
 import org.apache.pdfbox.pdmodel.PDPageContentStream
+import org.apache.pdfbox.pdmodel.common.PDStream
 import org.apache.pdfbox.pdmodel.font.PDType0Font
 import org.apache.pdfbox.pdmodel.graphics.state.RenderingMode
 import org.apache.pdfbox.text.PDFTextStripper
@@ -60,12 +62,34 @@ class MuOcrChineseFontTest {
                     stream.showText(phrase)
                     stream.endText()
                 }
-                // Desktop PDFBox 2.0.31 subsets fonts automatically when
-                // saving incrementally. Calling font.subset() here as well
-                // would subset a closed font twice and fail with missing cmap.
-                // PDFBox-Android 2.0.27.0 does NOT auto-subset, so the Android
-                // PdfSystemFontResolver calls subsetFontsForIncrementalSave().
+                // Mirror Android's explicit font subsetting. Desktop PDFBox
+                // 2.0.31 would normally do this again during saveIncremental,
+                // so clear its private pending-subset set in this regression
+                // test only (not in the application).
+                font.subset()
+                val pending = PDDocument::class.java.getDeclaredField("fontsToSubset")
+                pending.isAccessible = true
+                @Suppress("UNCHECKED_CAST")
+                (pending.get(document) as MutableCollection<Any>).clear()
+
+                // Emulate Android resolver's exact OCR codepoint -> old GID map.
+                val mapping = linkedMapOf<Int, Int>()
+                TTFParser().parse(bundledFont()).use { ttf ->
+                    val cmap = ttf.getUnicodeCmapLookup(false)
+                    phrase.codePoints().forEach { cp ->
+                        val gid = cmap.getGlyphId(cp)
+                        if (gid > 0) mapping[gid] = cp
+                    }
+                }
+                val unicodeStream = PDStream(document)
+                unicodeStream.createOutputStream(COSName.FLATE_DECODE).use { out ->
+                    out.write(UnicodeCMapBuilder.build(mapping))
+                }
+                font.cosObject.setItem(COSName.TO_UNICODE, unicodeStream.cosObject)
+                font.cosObject.setNeedToBeUpdated(true)
+
                 val touched = LinkedHashSet<COSDictionary>()
+                touched.add(font.cosObject)
                 page.cosObject.setNeedToBeUpdated(true)
                 touched.add(page.cosObject)
                 page.resources.cosObject.setNeedToBeUpdated(true)
