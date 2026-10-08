@@ -104,10 +104,11 @@ class LargePdfOcrWorker(
             System.gc()
 
             report("载入原始 PDF 以写入文字层", 0, pageCount, 92, true)
-            writeSearchablePdf(original, pagesDir, scratch, pageCount) {
-                applicationContext.contentResolver.openOutputStream(output, "wt")
-                    ?: throw IOException("无法打开输出文件")
-            }
+            IncrementalOcrPdfExporter(
+                applicationContext, original, pagesDir, scratch, pageCount
+            ) { stage, page, total, percent ->
+                report(stage, page, total, percent)
+            }.exportTo(output)
 
             report("已完成", pageCount, pageCount, 100, true)
             completed = true
@@ -298,107 +299,6 @@ class LargePdfOcrWorker(
                     recognizer.close()
                 }
                 return total
-            }
-        }
-    }
-
-    /**
-     * PDFBox is opened only after OCR resources have been closed.
-     * Loading from a File avoids an extra input-stream scratch copy and
-     * lets PDFBox use a buffered random-access file reader.
-     */
-    private suspend fun writeSearchablePdf(
-        original: File,
-        pagesDir: File,
-        scratch: File,
-        expectedPages: Int,
-        openOutput: () -> java.io.OutputStream
-    ) {
-        PDDocument.load(
-            original,
-            MemoryUsageSetting.setupTempFileOnly().setTempDir(scratch)
-        ).use { document ->
-            if (document.isEncrypted) throw IOException("此版本暂不支持加密 PDF")
-            if (document.numberOfPages != expectedPages) {
-                throw IOException("PDF 页面数量不一致：渲染 $expectedPages 页，编辑 " +
-                    document.numberOfPages + " 页")
-            }
-
-            PdfSystemFontResolver(document, TAG).use { fonts ->
-                for (index in 0 until expectedPages) {
-                    coroutineContext.ensureActive()
-                    if (isStopped) throw CancellationException("任务已取消")
-                    val page = OcrPageJournal.read(pagesDir, index)
-                        ?: throw IOException("第 " + (index + 1) + " 页的 OCR 记录缺失")
-                    if (page.lines.isNotEmpty()) {
-                        appendInvisibleLayer(
-                            document, document.getPage(index), page, fonts
-                        )
-                    }
-                    val pct = 92 + (((index + 1) * 5L) / expectedPages).toInt()
-                    report("写入文字层", index + 1, expectedPages, pct)
-                }
-
-                coroutineContext.ensureActive()
-                report("保存完整 PDF（可能需要数分钟）", expectedPages, expectedPages, 98, true)
-                openOutput().use { stream ->
-                    document.save(stream)
-                    stream.flush()
-                }
-            }
-        }
-    }
-
-    private fun appendInvisibleLayer(
-        document: PDDocument,
-        page: PDPage,
-        ocrPage: OcrPageJournal.Page,
-        fonts: PdfSystemFontResolver
-    ) {
-        val crop = page.cropBox ?: page.mediaBox ?: return
-        val rotation = normalizeRotation(page.rotation)
-        val (displayW, displayH) = displaySize(rotation, crop.width, crop.height)
-        val m = displayToUser(
-            rotation, crop.lowerLeftX, crop.lowerLeftY, crop.width, crop.height
-        )
-        val sx = displayW / ocrPage.width.toFloat()
-        val sy = displayH / ocrPage.height.toFloat()
-
-        PDPageContentStream(
-            document, page, PDPageContentStream.AppendMode.APPEND, true, true
-        ).use { out ->
-            out.saveGraphicsState()
-            try {
-                out.transform(Matrix(m[0], m[1], m[2], m[3], m[4], m[5]))
-                for (line in ocrPage.lines) {
-                    val bounds = line.rect
-                    val boxW = max(0.5f, bounds.width() * sx)
-                    val boxH = max(1f, bounds.height() * sy)
-                    val x = bounds.left * sx
-                    val y = displayH - bounds.bottom * sy + boxH * 0.12f
-                    val font = fonts.resolve(line.text, false)
-                    val fontSize = (boxH * 0.88f).coerceIn(1f, 96f)
-                    val naturalWidth = font.getStringWidth(line.text) / 1000f * fontSize
-                    if (naturalWidth <= 0f) continue
-                    val horizontalScale = (boxW / naturalWidth * 100f).coerceIn(5f, 1000f)
-
-                    var beganText = false
-                    try {
-                        out.beginText()
-                        beganText = true
-                        out.setRenderingMode(RenderingMode.NEITHER)
-                        out.setFont(font, fontSize)
-                        out.setHorizontalScaling(horizontalScale)
-                        out.newLineAtOffset(x, y)
-                        out.showText(line.text)
-                        out.endText()
-                        beganText = false
-                    } finally {
-                        if (beganText) runCatching { out.endText() }
-                    }
-                }
-            } finally {
-                out.restoreGraphicsState()
             }
         }
     }
