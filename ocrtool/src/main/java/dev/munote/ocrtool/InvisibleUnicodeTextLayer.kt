@@ -152,7 +152,7 @@ internal class InvisibleUnicodeTextLayer(
             setItem(COSName.TYPE, COSName.FONT)
             setItem(COSName.SUBTYPE, COSName.getPDFName("CIDFontType2"))
             setName(COSName.BASE_FONT, "MuOCRInvisible")
-            setItem(COSName.CID_SYSTEM_INFO, info)
+            setItem(COSName.getPDFName("CIDSystemInfo"), info)
             setInt(COSName.DW, 1000)
             setItem(COSName.FONT_DESC, descriptor)
             setItem(COSName.CID_TO_GID_MAP, COSName.IDENTITY)
