@@ -65,6 +65,21 @@ class OcrQueueLedgerTest {
     }
 
     @Test
+    fun pauseAllThenImmediatelyResumeDoesNotStrandRunningTask() = withLedger { queue, _ ->
+        val entries = queue.three()
+        queue.claimNext()
+        queue.pauseAll()
+        assertEquals("pausing", queue.stateOf(entries[0].id))
+        queue.resumeAll()
+        assertEquals("running", queue.stateOf(entries[0].id))
+        // If the worker already noticed pause before resume-all was clicked,
+        // it should be requeued to continue, not left paused forever.
+        queue.finish(entries[0].id, OcrQueueLedger.Status.PAUSED)
+        assertEquals("waiting", queue.stateOf(entries[0].id))
+        assertEquals(entries[0].id, queue.claimNext()!!.id)
+    }
+
+    @Test
     fun cancellingOneTaskDoesNotCancelOtherTasks() = withLedger { queue, _ ->
         val entries = queue.three()
         queue.claimNext()
