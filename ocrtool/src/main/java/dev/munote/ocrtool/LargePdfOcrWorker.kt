@@ -15,6 +15,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ListenableWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -67,21 +68,126 @@ class LargePdfOcrWorker(
     private var activePage = 0
     private var activeTotal = 0
     private var lastForegroundPage = -1
+    private var currentTaskId: String? = null
+    private var lastDirectivePoll = 0L
+
+    private class TaskPaused : RuntimeException("Task paused")
+    private class TaskCancelled : RuntimeException("Task cancelled")
+
 
     override suspend fun doWork() = withContext(Dispatchers.IO) {
+        if (inputData.getBoolean(KEY_QUEUE_MODE, false)) {
+            return@withContext runQueue()
+        }
+        // Old single-document WorkManager requests remain supported during
+        // upgrades from MuOCR v1.0.0.
         val input = inputData.getString(KEY_INPUT_URI)?.let(Uri::parse)
             ?: return@withContext failure("缺少输入 PDF")
         val output = inputData.getString(KEY_OUTPUT_URI)?.let(Uri::parse)
             ?: return@withContext failure("缺少输出 PDF")
-        if (input == output) {
-            return@withContext failure("不能覆盖原 PDF，请另存到新文件")
-        }
+        runDocument(input, output, inputData.getInt(KEY_MAX_DIMENSION, 2200), null)
+    }
 
-        val maxDimension = inputData.getInt(KEY_MAX_DIMENSION, 2200).coerceIn(1200, 3200)
+    /**
+     * One durable WorkManager supervisor loops serially through task entries.
+     * A per-task pause/cancel is a cooperative flag, not a WorkManager
+     * cancellation, so no unrelated queued work can be cancelled.
+     */
+    private suspend fun runQueue(): Result {
+        val ledger = OcrQueueScheduler.store(applicationContext)
+        ledger.recoverAfterWorkerRestart()
+        while (true) {
+            coroutineContext.ensureActive()
+            val entry = ledger.claimNext() ?: return Result.success()
+            currentTaskId = entry.id
+            lastForegroundPage = -1
+            lastDirectivePoll = 0L
+
+            var output = ""
+            try {
+                // A process can be killed while exporting. Delete an orphaned
+                // partial destination, but preserve the private PDF journal.
+                OcrQueueScheduler.deleteIncompleteOutput(applicationContext, entry.outputUri)
+                val destination = OcrQueueScheduler.createOutputFile(applicationContext, entry)
+                output = destination.toString()
+                ledger.setOutput(entry.id, output)
+
+                val result = runDocument(
+                    Uri.parse(entry.inputUri), destination, entry.quality, entry.id
+                )
+                when (result) {
+                    is ListenableWorker.Result.Success -> ledger.finish(
+                        entry.id, OcrQueueLedger.Status.DONE
+                    )
+                    is ListenableWorker.Result.Failure -> {
+                        val error = result.outputData.getString("error") ?: "文件处理失败"
+                        ledger.finish(entry.id, OcrQueueLedger.Status.FAILED, error)
+                        OcrQueueScheduler.deleteIncompleteOutput(applicationContext, output)
+                        ledger.clearOutput(entry.id)
+                    }
+                    else -> {
+                        ledger.finish(entry.id, OcrQueueLedger.Status.FAILED, "请重试")
+                        OcrQueueScheduler.deleteIncompleteOutput(applicationContext, output)
+                        ledger.clearOutput(entry.id)
+                    }
+                }
+            } catch (_: TaskPaused) {
+                OcrQueueScheduler.deleteIncompleteOutput(applicationContext, output)
+                ledger.clearOutput(entry.id)
+                ledger.finish(entry.id, OcrQueueLedger.Status.PAUSED)
+            } catch (_: TaskCancelled) {
+                OcrQueueScheduler.deleteIncompleteOutput(applicationContext, output)
+                ledger.clearOutput(entry.id)
+                ledger.finish(entry.id, OcrQueueLedger.Status.CANCELLED)
+                OcrQueueScheduler.cleanTaskCache(applicationContext, entry.id)
+            } catch (cancelled: CancellationException) {
+                // Android stopped the whole worker. Keep all task checkpoints:
+                // the next supervisor will re-claim the interrupted task.
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e(TAG, "Queue item failed: ${entry.name}", error)
+                OcrQueueScheduler.deleteIncompleteOutput(applicationContext, output)
+                ledger.clearOutput(entry.id)
+                ledger.finish(entry.id, OcrQueueLedger.Status.FAILED,
+                    error.message ?: error.javaClass.simpleName)
+            } finally {
+                currentTaskId = null
+            }
+        }
+    }
+
+    private fun checkTaskInterruption(force: Boolean = false) {
+        val id = currentTaskId ?: return
+        val now = System.nanoTime()
+        if (!force && now - lastDirectivePoll < 150_000_000L) return
+        lastDirectivePoll = now
+        val state = OcrQueueScheduler.store(applicationContext).stateOf(id)
+        when (state) {
+            OcrQueueLedger.Status.PAUSING, OcrQueueLedger.Status.PAUSED ->
+                throw TaskPaused()
+            OcrQueueLedger.Status.CANCELLING, OcrQueueLedger.Status.CANCELLED, null ->
+                throw TaskCancelled()
+        }
+    }
+
+    private suspend fun runDocument(
+        input: Uri,
+        output: Uri,
+        selectedQuality: Int,
+        taskId: String?
+    ): Result {
+        activeStage = "准备文件"
+        activePage = 0
+        activeTotal = 0
+        lastForegroundPage = -1
+        if (input == output) return failure("不能覆盖原 PDF，请另存到新文件")
+
+        val maxDimension = selectedQuality.coerceIn(1200, 3200)
         val metadata = sourceMetadata(input)
         val rootDir = applicationContext.getExternalFilesDir("muocr-work")
             ?: File(applicationContext.filesDir, "muocr-work")
-        val jobDir = File(rootDir, jobId(input, metadata))
+        val jobDir = if (taskId == null) File(rootDir, jobId(input, metadata))
+            else OcrQueueScheduler.taskDirectory(applicationContext, taskId)
         val pagesDir = File(jobDir, "pages")
         val scratch = File(jobDir, "scratch")
         var completed = false
@@ -97,6 +203,9 @@ class LargePdfOcrWorker(
                 throw IOException("无法建立 PDF 临时目录")
             }
 
+            if (taskId != null) {
+                importLegacyCacheIfPresent(rootDir, input, metadata, jobDir)
+            }
             report("准备文件", 0, 0, 0, true)
             val original = File(jobDir, "original.pdf")
             ensureSourceCopy(input, original, metadata.size)
@@ -119,6 +228,10 @@ class LargePdfOcrWorker(
             report("已完成", pageCount, pageCount, 100, true)
             completed = true
             Result.success(workDataOf("pages" to pageCount))
+        } catch (signal: TaskPaused) {
+            throw signal
+        } catch (signal: TaskCancelled) {
+            throw signal
         } catch (cancelled: CancellationException) {
             // The page journal is deliberately kept so a new run may resume.
             throw cancelled
@@ -143,6 +256,35 @@ class LargePdfOcrWorker(
                 // in app storage.
                 jobDir.deleteRecursively()
             }
+        }
+    }
+
+    private fun importLegacyCacheIfPresent(
+        root: File,
+        input: Uri,
+        metadata: SourceMetadata,
+        job: File
+    ) {
+        val legacy = File(root, jobId(input, metadata))
+        if (!legacy.isDirectory || legacy == job) return
+
+        // Preserve the v1.0.0 page journal without sharing mutable state
+        // across independent queue entries.
+        val oldPages = File(legacy, "pages")
+        val newPages = File(job, "pages")
+        if (oldPages.isDirectory && newPages.listFiles().isNullOrEmpty()) {
+            oldPages.listFiles()?.filter { it.isFile && it.name.endsWith(".json") }
+                ?.forEach { page ->
+                    runCatching { page.copyTo(File(newPages, page.name), overwrite = false) }
+                }
+        }
+
+        // If supported by the filesystem, a hard link reuses the 1GB input
+        // bytes without consuming another 1GB. Fallback is the normal SAF copy.
+        val original = File(legacy, "original.pdf")
+        val linked = File(job, "original.pdf")
+        if (original.isFile && !linked.exists()) {
+            runCatching { java.nio.file.Files.createLink(linked.toPath(), original.toPath()) }
         }
     }
 
@@ -209,6 +351,7 @@ class LargePdfOcrWorker(
                     var lastReport = 0L
                     while (true) {
                         coroutineContext.ensureActive()
+                        checkTaskInterruption()
                         val count = input.read(buffer)
                         if (count < 0) break
                         if (count == 0) continue
@@ -255,7 +398,8 @@ class LargePdfOcrWorker(
                 try {
                     for (index in 0 until total) {
                         coroutineContext.ensureActive()
-                        if (isStopped) throw CancellationException("OCR 已取消")
+                        checkTaskInterruption()
+            if (isStopped) throw CancellationException("OCR 已取消")
 
                         val previous = OcrPageJournal.read(pagesDir, index)
                         if (previous != null) {
@@ -379,6 +523,7 @@ class LargePdfOcrWorker(
         var batchSize = BATCH_PAGES
         while (state.nextPage < expectedPages) {
             coroutineContext.ensureActive()
+            checkTaskInterruption()
             if (isStopped) throw CancellationException("PDF 导出已取消")
             val start = state.nextPage
             val endExclusive = min(start + batchSize, expectedPages)
@@ -460,7 +605,8 @@ class LargePdfOcrWorker(
             PdfSystemFontResolver(document, TAG, applicationContext).use { fonts ->
                 for (index in start until endExclusive) {
                     coroutineContext.ensureActive()
-                    if (isStopped) throw CancellationException("PDF 导出已取消")
+                    checkTaskInterruption()
+            if (isStopped) throw CancellationException("PDF 导出已取消")
                     val page = OcrPageJournal.read(pagesDir, index)
                         ?: throw IOException("第 " + (index + 1) + " 页 OCR 缓存丢失")
                     if (page.lines.isEmpty()) continue
@@ -535,7 +681,9 @@ class LargePdfOcrWorker(
         val buffer = ByteArray(128 * 1024)
         while (true) {
             coroutineContext.ensureActive()
+            checkTaskInterruption()
             if (isStopped) throw CancellationException("文件复制已取消")
+            checkTaskInterruption()
             val count = input.read(buffer)
             if (count < 0) break
             if (count > 0) output.write(buffer, 0, count)
@@ -634,6 +782,12 @@ class LargePdfOcrWorker(
         activeStage = stage
         activePage = page
         activeTotal = total
+        currentTaskId?.let { task ->
+            OcrQueueScheduler.store(applicationContext).progress(
+                task, stage, page, total, percent
+            )
+        }
+        checkTaskInterruption(force = true)
         setProgress(
             workDataOf(
                 "stage" to stage,
@@ -687,6 +841,7 @@ class LargePdfOcrWorker(
     private data class SourceMetadata(val size: Long, val modified: Long)
 
     companion object {
+        const val KEY_QUEUE_MODE = "queue_mode"
         const val KEY_INPUT_URI = "input_uri"
         const val KEY_OUTPUT_URI = "output_uri"
         const val KEY_MAX_DIMENSION = "max_dimension"
