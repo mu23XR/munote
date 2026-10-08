@@ -9,13 +9,16 @@ import com.tom_roush.fontbox.ttf.OpenTypeFont;
 import com.tom_roush.fontbox.ttf.TTFParser;
 import com.tom_roush.fontbox.ttf.TrueTypeCollection;
 import com.tom_roush.fontbox.ttf.TrueTypeFont;
+import com.tom_roush.pdfbox.cos.COSName;
 import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.pdmodel.common.PDStream;
 import com.tom_roush.pdfbox.pdmodel.common.PDStream;
 import com.tom_roush.pdfbox.cos.COSName;
 import com.tom_roush.pdfbox.pdmodel.font.PDFont;
 import com.tom_roush.pdfbox.pdmodel.font.PDType0Font;
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font;
 
+import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -26,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -73,6 +77,9 @@ public final class PdfSystemFontResolver implements Closeable {
     // PDFBox-Android 2.0.27.0 does NOT subset fonts in saveIncremental().
     // Track all fonts (including older cache entries) and subset explicitly.
     private final List<PDFont> fontsForSubset = new ArrayList<>();
+    // The exact OCR Unicode for each original TrueType glyph ID (PDF CID).
+    // The default PDFBox CJK glyph->Unicode reverse cmap is ambiguous.
+    private final Map<PDFont, Map<Integer, Integer>> exactUnicode = new IdentityHashMap<>();
     private final Map<PDFont, Map<Integer, Integer>> originalUnicodeByGlyph =
             new LinkedHashMap<>();
     private boolean subsetCompleted = false;
@@ -399,6 +406,43 @@ public final class PdfSystemFontResolver implements Closeable {
     }
 
     /**
+     * The PDF is searchable only if each glyph CID maps back to the original
+     * OCR Unicode character. Several CJK code points share an identical glyph
+     * with a Kangxi radical; PDFBox's cmapLookup.getCharCodes(gid).get(0)
+     * chooses the radical instead of the expected Chinese character.
+     */
+    private void rememberUnicode(ResolvedFont resolved, String text) throws IOException {
+        CmapLookup lookup = resolved.trueTypeFont.getUnicodeCmapLookup(false);
+        if (lookup == null) throw new IOException("OCR 字体没有 Unicode cmap");
+        Map<Integer, Integer> byGid = exactUnicode.get(resolved.pdfFont);
+        if (byGid == null) {
+            byGid = new HashMap<>();
+            exactUnicode.put(resolved.pdfFont, byGid);
+        }
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (shouldIgnoreForGlyphCheck(cp)) continue;
+            int gid = lookup.getGlyphId(cp);
+            if (gid <= 0) continue;
+            Integer previous = byGid.get(gid);
+            if (previous == null || isCompatibilityRadical(previous) && !isCompatibilityRadical(cp)) {
+                byGid.put(gid, cp);
+            } else if (previous != cp && !isCompatibilityRadical(cp)) {
+                Log.w(logTag, "OCR glyph CID collision: " + gid +
+                    " maps both U+" + Integer.toHexString(previous) +
+                    " and U+" + Integer.toHexString(cp));
+            }
+        }
+    }
+
+    private static boolean isCompatibilityRadical(int codepoint) {
+        // Kangxi radicals are the main CJK Unicode aliases involved in this
+        // PDFBox issue; preserve exact OCR strings for all ordinary Han glyphs.
+        return codepoint >= 0x2F00 && codepoint <= 0x2FDF;
+    }
+
+    /**
      * PDFBox-Android inherited a PDFBox bug: saveIncremental() doesn't invoke
      * PDType0Font.subset(). Without this, Chinese fonts may be unusable in the
      * exported PDF despite a successful write.
@@ -410,6 +454,14 @@ public final class PdfSystemFontResolver implements Closeable {
         for (PDFont font : fontsForSubset) {
             if (font.willBeSubset()) {
                 font.subset();
+                Map<Integer, Integer> mapping = exactUnicode.get(font);
+                if (mapping != null && !mapping.isEmpty()) {
+                    byte[] cmapBytes = OcrUnicodeCMap.encode(mapping);
+                    PDStream cmapStream = new PDStream(
+                        document, new ByteArrayInputStream(cmapBytes), COSName.FLATE_DECODE);
+                    font.getCOSObject().setItem(COSName.TO_UNICODE, cmapStream);
+                    font.getCOSObject().setNeedToBeUpdated(true);
+                }
             }
         }
         writeExactToUnicodeMaps();
