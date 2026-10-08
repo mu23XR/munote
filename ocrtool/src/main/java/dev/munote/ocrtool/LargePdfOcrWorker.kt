@@ -77,7 +77,6 @@ class LargePdfOcrWorker(
         val jobDir = File(rootDir, jobId(input, metadata))
         val pagesDir = File(jobDir, "pages")
         val scratch = File(jobDir, "scratch")
-        var outputTouched = false
         var completed = false
 
         try {
@@ -105,8 +104,7 @@ class LargePdfOcrWorker(
             System.gc()
 
             report("载入原始 PDF 以写入文字层", 0, pageCount, 92, true)
-            writeSearchablePdf(original, pagesDir, scratch, pageCount) { out ->
-                outputTouched = true
+            writeSearchablePdf(original, pagesDir, scratch, pageCount) {
                 applicationContext.contentResolver.openOutputStream(output, "wt")
                     ?: throw IOException("无法打开输出文件")
             }
@@ -125,7 +123,7 @@ class LargePdfOcrWorker(
             failure("阶段：$activeStage，第 $activePage/$activeTotal 页；" +
                 (error.message ?: error.javaClass.simpleName))
         } finally {
-            if (!completed && outputTouched) {
+            if (!completed) {
                 // Incomplete PDF output is not a usable document. Keep OCR cache,
                 // but remove the partial output when the provider supports it.
                 runCatching {
