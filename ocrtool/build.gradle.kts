@@ -49,4 +49,6 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     testImplementation("junit:junit:4.13.2")
+    // JVM PDF regression: same incremental-save semantics as PDFBox-Android.
+    testImplementation("org.apache.pdfbox:pdfbox:2.0.31")
 }
