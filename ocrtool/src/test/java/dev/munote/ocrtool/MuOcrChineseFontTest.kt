@@ -70,6 +70,11 @@ class MuOcrChineseFontTest {
                 touched.add(page.cosObject)
                 page.resources.cosObject.setNeedToBeUpdated(true)
                 touched.add(page.resources.cosObject)
+                val fonts = page.resources.cosObject.getCOSDictionary(
+                    org.apache.pdfbox.cos.COSName.FONT
+                )
+                fonts?.setNeedToBeUpdated(true)
+                if (fonts != null) touched.add(fonts)
                 document.documentCatalog.cosObject.setNeedToBeUpdated(true)
                 touched.add(document.documentCatalog.cosObject)
                 document.documentCatalog.pages.cosObject.setNeedToBeUpdated(true)
@@ -84,8 +89,9 @@ class MuOcrChineseFontTest {
                 .contentEquals(base.readBytes()))
             PDDocument.load(output).use { document ->
                 assertEquals(1, document.numberOfPages)
-                assertTrue("Chinese Unicode was lost after font subsetting",
-                    PDFTextStripper().getText(document).contains(phrase))
+                val extracted = PDFTextStripper().getText(document)
+                assertTrue("Chinese Unicode lost: wanted <${phrase}>, got <${extracted.take(240)}>",
+                    extracted.contains(phrase))
             }
         } finally {
             dir.deleteRecursively()
