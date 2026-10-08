@@ -57,6 +57,7 @@ class LargePdfOcrWorker(
         var rendererPfd: ParcelFileDescriptor? = null
         var renderer: PdfRenderer? = null
         var document: PDDocument? = null
+        var fonts: PdfSystemFontResolver? = null
 
         try {
             setStage("打开 PDF", 0, 0)
@@ -81,8 +82,8 @@ class LargePdfOcrWorker(
             val total = min(renderer.pageCount, document.numberOfPages)
             if (total <= 0) return@withContext failure("PDF 没有页面")
 
-            PdfSystemFontResolver(document, "MuOCRFont").use { fonts ->
-                for (pageIndex in 0 until total) {
+            fonts = PdfSystemFontResolver(document, "MuOCRFont")
+            for (pageIndex in 0 until total) {
                     coroutineContext.ensureActive()
                     if (isStopped) return@withContext failure("任务已取消")
 
@@ -141,7 +142,6 @@ class LargePdfOcrWorker(
                     val pct = ((done * 92L) / total).toInt().coerceIn(1, 92)
                     setStage("OCR", done, total, pct)
                 }
-            }
 
             coroutineContext.ensureActive()
             setStage("保存 PDF", total, total, 95)
@@ -161,6 +161,7 @@ class LargePdfOcrWorker(
             if (t is kotlinx.coroutines.CancellationException) throw t
             return@withContext failure(t.message ?: t.javaClass.simpleName)
         } finally {
+            runCatching { fonts?.close() }
             runCatching { document?.close() }
             runCatching { renderer?.close() }
             runCatching { rendererPfd?.close() }
