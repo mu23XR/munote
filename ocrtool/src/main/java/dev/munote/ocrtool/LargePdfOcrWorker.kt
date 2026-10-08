@@ -260,12 +260,10 @@ class LargePdfOcrWorker(
         maxPixels: Long
     ): Pair<Int, Int> {
         if (width <= 0 || height <= 0) return 1 to 1
-        var scale = maxDimension.toFloat() / max(width, height).toFloat()
-        scale = max(scale, 1f)
-
+        val dimensionScale = maxDimension.toFloat() / max(width, height).toFloat()
         val pixelScale = sqrt(maxPixels.toDouble() / (width.toLong() * height.toLong()).toDouble())
             .toFloat()
-        scale = min(scale, pixelScale)
+        var scale = min(dimensionScale, pixelScale).coerceAtMost(4f)
         if (scale <= 0f) scale = 1f
 
         return max(1, (width * scale).toInt()) to max(1, (height * scale).toInt())
