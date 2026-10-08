@@ -13,6 +13,7 @@ android {
         targetSdk = 34
         versionCode = 3
         versionName = "0.1.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -48,4 +49,6 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.4")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
