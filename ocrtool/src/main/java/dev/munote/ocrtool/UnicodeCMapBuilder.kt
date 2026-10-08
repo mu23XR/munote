@@ -14,7 +14,8 @@ import java.nio.charset.StandardCharsets
  * We instead capture the actual OCR codepoints when writing each glyph, then
  * create a ToUnicode CMap with those original codepoints.
  */
-internal object UnicodeCMapBuilder {
+object UnicodeCMapBuilder {
+    @JvmStatic
     fun build(gidToUnicode: Map<Int, Int>): ByteArray {
         require(gidToUnicode.isNotEmpty())
         val entries = gidToUnicode.entries
