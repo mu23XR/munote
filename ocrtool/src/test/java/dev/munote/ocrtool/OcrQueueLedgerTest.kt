@@ -80,6 +80,68 @@ class OcrQueueLedgerTest {
     }
 
     @Test
+    fun resumeAllMustNotResumeIndividuallyPausedPdf() = withLedger { queue, dir ->
+        val entries = queue.three()
+        val active = queue.claimNext()!!
+        assertEquals(entries[0].id, active.id)
+
+        // Individually pause B, then suspend the entire queue while A runs.
+        queue.pause(entries[1].id)
+        assertEquals(OcrQueueLedger.Status.PAUSED, queue.stateOf(entries[1].id))
+        queue.pauseAll()
+        assertEquals(OcrQueueLedger.Status.PAUSING, queue.stateOf(entries[0].id))
+        queue.finish(entries[0].id, OcrQueueLedger.Status.PAUSED)
+
+        // Simulate app process restart before global resume.
+        val reopened = OcrQueueLedger(File(dir, "queue.json"))
+        reopened.resumeAll()
+        assertEquals(OcrQueueLedger.Status.WAITING, reopened.stateOf(entries[0].id))
+        assertEquals(OcrQueueLedger.Status.PAUSED, reopened.stateOf(entries[1].id))
+        assertEquals(OcrQueueLedger.Status.WAITING, reopened.stateOf(entries[2].id))
+
+        assertEquals(entries[0].id, reopened.claimNext()!!.id)
+        reopened.finish(entries[0].id, OcrQueueLedger.Status.DONE)
+        assertEquals(entries[2].id, reopened.claimNext()!!.id)
+        reopened.finish(entries[2].id, OcrQueueLedger.Status.DONE)
+        assertNull(reopened.claimNext())
+
+        // The explicit resume action, and only that action, can resume B.
+        reopened.resume(entries[1].id)
+        assertEquals(entries[1].id, reopened.claimNext()!!.id)
+    }
+
+    @Test
+    fun resumeAllDuringActivePauseHonorsExplicitPerFilePause() =
+        withLedger { queue, _ ->
+            val entries = queue.three()
+            queue.claimNext()
+            queue.pauseAll()
+            // A was pausing from a global request, but user explicitly
+            // pauses that PDF before pressing Resume All.
+            queue.pause(entries[0].id)
+            queue.resumeAll()
+            assertEquals(OcrQueueLedger.Status.PAUSING, queue.stateOf(entries[0].id))
+            queue.finish(entries[0].id, OcrQueueLedger.Status.PAUSED)
+            assertEquals(OcrQueueLedger.Status.PAUSED, queue.stateOf(entries[0].id))
+            assertEquals(entries[1].id, queue.claimNext()!!.id)
+        }
+
+    @Test
+    fun globalPausePendingAcrossWorkerRestartDoesNotUnpauseManualPause() =
+        withLedger { queue, dir ->
+            val entries = queue.three()
+            queue.pause(entries[1].id)
+            queue.claimNext()
+            queue.pauseAll()
+            val reopened = OcrQueueLedger(File(dir, "queue.json"))
+            reopened.recoverAfterWorkerRestart()
+            assertEquals(OcrQueueLedger.Status.PAUSED, reopened.stateOf(entries[0].id))
+            reopened.resumeAll()
+            assertEquals(OcrQueueLedger.Status.WAITING, reopened.stateOf(entries[0].id))
+            assertEquals(OcrQueueLedger.Status.PAUSED, reopened.stateOf(entries[1].id))
+        }
+
+    @Test
     fun cancellingOneTaskDoesNotCancelOtherTasks() = withLedger { queue, _ ->
         val entries = queue.three()
         queue.claimNext()
