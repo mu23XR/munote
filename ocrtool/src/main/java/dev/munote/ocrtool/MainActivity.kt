@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(20), dp(18), dp(24))
         }
 
-        root.addView(text("MuOCR · 1.1.0", 27f))
+        root.addView(text("MuOCR · 1.1.1", 27f))
         root.addView(text(
             "批量 OCR：多个 PDF 排队处理，同一时间只运行一个。每个文件独立缓存、导出与控制；可以暂停、继续、取消和重试。",
             14f, 10
@@ -232,7 +232,7 @@ class MainActivity : AppCompatActivity() {
         summaryText = text("尚无任务", 14f, 12)
         root.addView(summaryText)
         root.addView(text(
-            "暂停会保留当前文件的 OCR 和 PDF 导出断点；取消仅清理当前任务的工作副本。操作通常在本页完成或文件拷贝检查点生效，不会影响其他任务。",
+            "单独暂停的文件不会因为点击「继续全部任务」而自动恢复。暂停保留 OCR 和 PDF 导出断点；取消只清理指定任务。操作在页或批次检查点生效。",
             12f, 6
         ))
 

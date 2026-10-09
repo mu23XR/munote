@@ -38,6 +38,9 @@ internal class OcrQueueLedger(private val manifest: File) {
         var total: Int = 0,
         var stage: String = "等待处理",
         var error: String = "",
+        // True only when "Pause all" suspended this entry. A manually paused
+        // task must remain paused when the global queue is resumed.
+        var pausedByGlobal: Boolean = false,
         var createdAt: Long = 0L
     )
 
@@ -107,6 +110,7 @@ internal class OcrQueueLedger(private val manifest: File) {
         val entry = state.entries.firstOrNull { it.status == Status.WAITING }
             ?: return@edit null
         entry.status = Status.RUNNING
+        entry.pausedByGlobal = false
         entry.stage = "等待文件准备"
         entry.error = ""
         entry.copy()
@@ -150,6 +154,9 @@ internal class OcrQueueLedger(private val manifest: File) {
                 Status.WAITING else status
             else -> status
         }
+        if (entry.status != Status.PAUSED && entry.status != Status.PAUSING) {
+            entry.pausedByGlobal = false
+        }
         if (entry.status == Status.DONE) {
             entry.progress = 100
             entry.stage = "完成"
@@ -167,6 +174,11 @@ internal class OcrQueueLedger(private val manifest: File) {
     @Synchronized
     fun pause(id: String) = edit { state ->
         val entry = state.entries.find { it.id == id } ?: return@edit
+        // Explicit per-document pause always overrides a global pause.
+        if (entry.status in setOf(Status.RUNNING, Status.WAITING,
+                Status.PAUSING, Status.PAUSED)) {
+            entry.pausedByGlobal = false
+        }
         entry.status = when (entry.status) {
             Status.RUNNING -> Status.PAUSING
             Status.WAITING -> Status.PAUSED
@@ -178,6 +190,7 @@ internal class OcrQueueLedger(private val manifest: File) {
     fun resume(id: String) = edit { state ->
         val entry = state.entries.find { it.id == id } ?: return@edit
         if (entry.status == Status.PAUSED || entry.status == Status.FAILED) {
+            entry.pausedByGlobal = false
             entry.status = Status.WAITING
             entry.error = ""
             entry.stage = "等待续做"
@@ -187,6 +200,7 @@ internal class OcrQueueLedger(private val manifest: File) {
     @Synchronized
     fun cancel(id: String) = edit { state ->
         val entry = state.entries.find { it.id == id } ?: return@edit
+        entry.pausedByGlobal = false
         entry.status = when (entry.status) {
             Status.RUNNING, Status.PAUSING -> Status.CANCELLING
             Status.WAITING, Status.PAUSED, Status.FAILED -> Status.CANCELLED
@@ -198,6 +212,7 @@ internal class OcrQueueLedger(private val manifest: File) {
     fun retry(id: String) = edit { state ->
         val entry = state.entries.find { it.id == id } ?: return@edit
         if (entry.status == Status.CANCELLED || entry.status == Status.FAILED) {
+            entry.pausedByGlobal = false
             entry.status = Status.WAITING
             entry.stage = "等待重新处理"
             entry.error = ""
@@ -209,7 +224,10 @@ internal class OcrQueueLedger(private val manifest: File) {
     fun pauseAll() = edit { state ->
         state.pausedAll = true
         state.entries.forEach { entry ->
-            if (entry.status == Status.RUNNING) entry.status = Status.PAUSING
+            if (entry.status == Status.RUNNING) {
+                entry.status = Status.PAUSING
+                entry.pausedByGlobal = true
+            }
         }
     }
 
@@ -217,16 +235,21 @@ internal class OcrQueueLedger(private val manifest: File) {
     fun resumeAll() = edit { state ->
         state.pausedAll = false
         state.entries.forEach { entry ->
-            when (entry.status) {
-                Status.PAUSED -> {
-                    entry.status = Status.WAITING
-                    entry.stage = "等待续做"
-                }
-                Status.PAUSING -> {
-                    // The worker might not have observed the pause yet.
-                    // Undo the stop request; if it has already exited,
-                    // finish(PAUSED) will requeue this task.
-                    entry.status = Status.RUNNING
+            // Restore ONLY the task held by global pause. Individually
+            // paused tasks are deliberately left in PAUSED.
+            if (entry.pausedByGlobal) {
+                when (entry.status) {
+                    Status.PAUSED -> {
+                        entry.status = Status.WAITING
+                        entry.stage = "等待续做"
+                        entry.pausedByGlobal = false
+                    }
+                    Status.PAUSING -> {
+                        // The worker might not have observed the pause yet.
+                        // If it already exited, finish(PAUSED) requeues it.
+                        entry.status = Status.RUNNING
+                        entry.pausedByGlobal = false
+                    }
                 }
             }
         }
