@@ -56,16 +56,16 @@ jobs:
           test -f "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --print-certs "$APK"
-          cp "$APK" MuOCR-v1.1.1.apk
-          sha256sum MuOCR-v1.1.1.apk > MuOCR-v1.1.1.apk.sha256
+          cp "$APK" MuOCR-v1.1.2.apk
+          sha256sum MuOCR-v1.1.2.apk > MuOCR-v1.1.2.apk.sha256
 
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
-          name: MuOCR-v1.1.1
+          name: MuOCR-v1.1.2
           path: |
-            MuOCR-v1.1.1.apk
-            MuOCR-v1.1.1.apk.sha256
+            MuOCR-v1.1.2.apk
+            MuOCR-v1.1.2.apk.sha256
           retention-days: 30
 
       - name: Publish MuOCR stable release
@@ -74,14 +74,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="muocr-v1.1.1"
+          TAG="muocr-v1.1.2"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists. Published APKs must never be overwritten."
             exit 1
           fi
-          gh release create "$TAG" MuOCR-v1.1.1.apk MuOCR-v1.1.1.apk.sha256 \
+          gh release create "$TAG" MuOCR-v1.1.2.apk MuOCR-v1.1.2.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "MuOCR v1.1.1 — 批量任务隔离修复" \
-            --notes "MuOCR v1.1.1 正式版：修复「继续全部任务」错误恢复之前单独暂停的 PDF，恢复整个队列现在仅继续被「暂停全部」中断的任务，单文件暂停保持不变。增加多文件暂停隔离及进程恢复回归测试；所有 v1.1.0 的串行队列、独立进度、失败重试及断点恢复功能保持不变。保留原包名/签名，可直接覆盖升级，勿卸载或清除数据。未对用户实际 1GB PDF 进行完整设备端验收。" \
+            --title "MuOCR v1.1.2 — 取消任务安全性修复" \
+            --notes "MuOCR v1.1.2 正式版：队列切换任务瞬间点击取消时，改用原子提交后的任务状态决定是否清理缓存，防止误删正在处理的 PDF 工作副本。保留批量多选、严格串行、单任务暂停/继续/取消、暂停全部、失败重试、独立输出与断点恢复功能。增加取消与任务认领竞态回归测试。沿用原签名及包名，可以覆盖安装并保留 OCR 缓存。尚未在用户实际 1GB PDF 上完成整本设备端验收。" \
             --latest
