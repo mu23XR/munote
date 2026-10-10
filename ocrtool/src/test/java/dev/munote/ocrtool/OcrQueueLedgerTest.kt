@@ -153,6 +153,35 @@ class OcrQueueLedgerTest {
         assertEquals(entries[2].id, queue.claimNext()!!.id)
     }
 
+    /**
+     * Cancelling a task being claimed by the supervisor must tell the UI
+     * whether it can safely reclaim files immediately. The old UI first
+     * read WAITING, then called cancel(): if the worker claimed the task in
+     * between, the UI would delete its live 1GB working directory.
+     */
+    @Test
+    fun cancellationReturnsActualCommittedStateForSafeIndependentCleanup() =
+        withLedger { queue, _ ->
+            val entries = queue.three()
+            assertEquals(
+                OcrQueueLedger.Status.CANCELLED,
+                queue.cancel(entries[2].id)
+            )
+            val claimed = queue.claimNext()!!
+            assertEquals(entries[0].id, claimed.id)
+            assertEquals(
+                OcrQueueLedger.Status.CANCELLING,
+                queue.cancel(entries[0].id)
+            )
+            assertNull("Running cancellation must finish before next claim", queue.claimNext())
+            queue.finish(entries[0].id, OcrQueueLedger.Status.CANCELLED)
+            assertEquals(entries[1].id, queue.claimNext()!!.id)
+            // Cancelling a finished task must never delete its output.
+            queue.finish(entries[1].id, OcrQueueLedger.Status.DONE)
+            assertEquals(OcrQueueLedger.Status.DONE, queue.cancel(entries[1].id))
+            assertNull(queue.cancel("missing-id"))
+        }
+
     @Test
     fun globalPauseAndResumeAreDurable() = withLedger { queue, dir ->
         val entries = queue.three()

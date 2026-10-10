@@ -197,15 +197,24 @@ internal class OcrQueueLedger(private val manifest: File) {
         }
     }
 
+    /**
+     * Atomically return the *committed* status after cancellation.
+     *
+     * The UI must never read a WAITING status before this call and assume
+     * that its cache can be deleted: the supervisor may claim that task in
+     * between those two operations. Only CANCELLED is safe for immediate
+     * cleanup; CANCELLING is owned by the running worker.
+     */
     @Synchronized
-    fun cancel(id: String) = edit { state ->
-        val entry = state.entries.find { it.id == id } ?: return@edit
+    fun cancel(id: String): String? = edit { state ->
+        val entry = state.entries.find { it.id == id } ?: return@edit null
         entry.pausedByGlobal = false
         entry.status = when (entry.status) {
             Status.RUNNING, Status.PAUSING -> Status.CANCELLING
             Status.WAITING, Status.PAUSED, Status.FAILED -> Status.CANCELLED
             else -> entry.status
         }
+        entry.status
     }
 
     @Synchronized

@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(20), dp(18), dp(24))
         }
 
-        root.addView(text("MuOCR · 1.1.1", 27f))
+        root.addView(text("MuOCR · 1.1.2", 27f))
         root.addView(text(
             "批量 OCR：多个 PDF 排队处理，同一时间只运行一个。每个文件独立缓存、导出与控制；可以暂停、继续、取消和重试。",
             14f, 10
@@ -377,26 +377,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun cancelEntry(id: String) {
-        val previous = store.stateOf(id)
         val uri = store.snapshot().entries.find { it.id == id }?.outputUri ?: ""
-        store.cancel(id)
+        // Check the status AFTER cancellation inside the same synchronized
+        // ledger transaction. A WAITING -> RUNNING transition can happen
+        // between two separate status reads; never delete that active cache.
+        val resultingStatus = store.cancel(id)
         refreshQueue()
 
-        // Running work is cleaned up by the worker after it exits safely.
-        // Paused or waiting tasks have no active PDFBox/OCR resources, so
-        // clean their private work dir off the UI thread right away.
-        if (previous in setOf(
-                OcrQueueLedger.Status.PAUSED,
-                OcrQueueLedger.Status.FAILED,
-                OcrQueueLedger.Status.WAITING
-            )) {
-            cleanupInProgress.add(id)
+        // An active worker owns its resources until it observes CANCELLING
+        // and exits at a safe page/batch checkpoint. In that case the worker
+        // performs cleanup. Only an already-idle entry may be cleaned here.
+        if (resultingStatus == OcrQueueLedger.Status.CANCELLED &&
+            cleanupInProgress.add(id)) {
             Thread {
                 try {
-                    OcrQueueScheduler.deleteIncompleteOutput(applicationContext, uri)
-                    OcrQueueScheduler.cleanTaskCache(applicationContext, id)
                     if (store.stateOf(id) == OcrQueueLedger.Status.CANCELLED) {
-                        store.clearOutput(id)
+                        OcrQueueScheduler.deleteIncompleteOutput(applicationContext, uri)
+                        OcrQueueScheduler.cleanTaskCache(applicationContext, id)
+                        if (store.stateOf(id) == OcrQueueLedger.Status.CANCELLED) {
+                            store.clearOutput(id)
+                        }
                     }
                 } finally {
                     cleanupInProgress.remove(id)
