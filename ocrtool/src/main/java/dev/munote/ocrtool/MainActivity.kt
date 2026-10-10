@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(20), dp(18), dp(24))
         }
 
-        root.addView(text("MuOCR · 1.1.1", 27f))
+        root.addView(text("MuOCR · 1.1.2", 27f))
         root.addView(text(
             "批量 OCR：多个 PDF 排队处理，同一时间只运行一个。每个文件独立缓存、导出与控制；可以暂停、继续、取消和重试。",
             14f, 10
