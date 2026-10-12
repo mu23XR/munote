@@ -1,6 +1,7 @@
 package dev.munote.ocrtool
 
 import org.junit.Assert.*
+import com.google.gson.JsonParser
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -317,9 +318,15 @@ class OcrQueueLedgerTest {
         withLedger { queue, dir ->
             val entries = queue.three()
             val manifest = File(dir, "queue.json")
-            var json = manifest.readText(Charsets.UTF_8)
-            // Old saved jobs have neither restart count nor restart timestamp.
-            assertFalse(json.contains("unexpectedRestarts"))
+            val json = JsonParser.parseString(manifest.readText(Charsets.UTF_8))
+                .asJsonObject
+            // Mimic pre-v1.1.3 JSON exactly: the two new fields are absent.
+            json.getAsJsonArray("entries").forEach { item ->
+                item.asJsonObject.remove("unexpectedRestarts")
+                item.asJsonObject.remove("lastUnexpectedRestartAt")
+            }
+            manifest.writeText(json.toString(), Charsets.UTF_8)
+            assertFalse(manifest.readText().contains("unexpectedRestarts"))
             val oldQueue = OcrQueueLedger(manifest)
             assertEquals(3, oldQueue.snapshot().entries.size)
             assertEquals(0, oldQueue.snapshot().entries[0].unexpectedRestarts)
