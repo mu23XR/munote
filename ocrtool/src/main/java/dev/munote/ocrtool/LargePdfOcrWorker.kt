@@ -109,6 +109,13 @@ class LargePdfOcrWorker(
                     ledger.clearOutput(entry.id)
                 }
                 OcrQueueScheduler.cleanTaskCache(applicationContext, entry.id)
+            } else if (entry.status == OcrQueueLedger.Status.FAILED &&
+                entry.outputUri.isNotBlank()) {
+                // A process killed mid-export may leave an incomplete PDF at
+                // the user-selected destination. Retain ONLY this task's
+                // original copy, page OCR and export checkpoints for retry.
+                OcrQueueScheduler.deleteIncompleteOutput(applicationContext, entry.outputUri)
+                ledger.clearOutput(entry.id)
             }
         }
         while (true) {

@@ -14,6 +14,11 @@ import java.util.UUID
  * and the PDF export journal belong to each task's own work directory.
  */
 internal class OcrQueueLedger(private val manifest: File) {
+    companion object {
+        private const val RECOVERY_WINDOW_MS = 60L * 60L * 1000L
+        private const val MAX_UNEXPECTED_RESTARTS = 3
+    }
+
     internal object Status {
         const val WAITING = "waiting"
         const val RUNNING = "running"
@@ -41,6 +46,11 @@ internal class OcrQueueLedger(private val manifest: File) {
         // True only when "Pause all" suspended this entry. A manually paused
         // task must remain paused when the global queue is resumed.
         var pausedByGlobal: Boolean = false,
+        // Unexpected Android/process deaths are tracked per PDF. If a bad PDF
+        // repeatedly kills the worker, it must not starve the whole queue.
+        // Zero defaults make older v1.1.x JSON queue files compatible.
+        var unexpectedRestarts: Int = 0,
+        var lastUnexpectedRestartAt: Long = 0L,
         var createdAt: Long = 0L
     )
 
@@ -79,22 +89,48 @@ internal class OcrQueueLedger(private val manifest: File) {
      * On a restarted supervisor, a previously in-progress entry can resume
      * from its journal instead of being stuck in RUNNING forever.
      */
+    /**
+     * If Android repeatedly kills the worker during a single PDF, stop
+     * automatically retrying THAT PDF and continue with other waiting files.
+     * OCR/PDF checkpoints are kept; the user can explicitly retry.
+     *
+     * A 60-minute rolling window prevents three unrelated system restarts
+     * over several days from incorrectly classifying a large book as broken.
+     */
     @Synchronized
-    fun recoverAfterWorkerRestart() {
+    fun recoverAfterWorkerRestart(nowMillis: Long = System.currentTimeMillis()) {
         edit { state ->
             state.entries.forEach { entry ->
                 when (entry.status) {
                     Status.RUNNING -> {
-                        entry.status = Status.WAITING
-                        entry.stage = "恢复未完成的任务"
+                        val recent = entry.lastUnexpectedRestartAt > 0L &&
+                            nowMillis >= entry.lastUnexpectedRestartAt &&
+                            nowMillis - entry.lastUnexpectedRestartAt <= RECOVERY_WINDOW_MS
+                        entry.unexpectedRestarts =
+                            if (recent) (entry.unexpectedRestarts + 1).coerceAtMost(MAX_UNEXPECTED_RESTARTS)
+                            else 1
+                        entry.lastUnexpectedRestartAt = nowMillis
+                        if (entry.unexpectedRestarts >= MAX_UNEXPECTED_RESTARTS) {
+                            entry.status = Status.FAILED
+                            entry.stage = "后台异常中断过多，已跳过"
+                            entry.error = "系统在一小时内多次终止此 PDF 任务；已保留本文件的 OCR / 导出断点，" +
+                                "并继续处理队列中的其他文件。请检查空间、内存或原 PDF 后手动重试。"
+                        } else {
+                            entry.status = Status.WAITING
+                            entry.stage = "恢复未完成的任务（${entry.unexpectedRestarts}/${MAX_UNEXPECTED_RESTARTS}）"
+                        }
                     }
                     Status.PAUSING -> {
                         entry.status = Status.PAUSED
                         entry.stage = "已暂停，可继续"
+                        entry.unexpectedRestarts = 0
+                        entry.lastUnexpectedRestartAt = 0L
                     }
                     Status.CANCELLING -> {
                         entry.status = Status.CANCELLED
                         entry.stage = "已取消"
+                        entry.unexpectedRestarts = 0
+                        entry.lastUnexpectedRestartAt = 0L
                     }
                 }
             }
@@ -157,6 +193,12 @@ internal class OcrQueueLedger(private val manifest: File) {
         if (entry.status != Status.PAUSED && entry.status != Status.PAUSING) {
             entry.pausedByGlobal = false
         }
+        // Successful completion and intentional pauses/cancellations are not
+        // repeated background crashes. Reset their restart history.
+        if (entry.status in setOf(Status.DONE, Status.PAUSED, Status.CANCELLED)) {
+            entry.unexpectedRestarts = 0
+            entry.lastUnexpectedRestartAt = 0L
+        }
         if (entry.status == Status.DONE) {
             entry.progress = 100
             entry.stage = "完成"
@@ -191,6 +233,8 @@ internal class OcrQueueLedger(private val manifest: File) {
         val entry = state.entries.find { it.id == id } ?: return@edit
         if (entry.status == Status.PAUSED || entry.status == Status.FAILED) {
             entry.pausedByGlobal = false
+            entry.unexpectedRestarts = 0
+            entry.lastUnexpectedRestartAt = 0L
             entry.status = Status.WAITING
             entry.error = ""
             entry.stage = "等待续做"
@@ -222,6 +266,8 @@ internal class OcrQueueLedger(private val manifest: File) {
         val entry = state.entries.find { it.id == id } ?: return@edit
         if (entry.status == Status.CANCELLED || entry.status == Status.FAILED) {
             entry.pausedByGlobal = false
+            entry.unexpectedRestarts = 0
+            entry.lastUnexpectedRestartAt = 0L
             entry.status = Status.WAITING
             entry.stage = "等待重新处理"
             entry.error = ""
