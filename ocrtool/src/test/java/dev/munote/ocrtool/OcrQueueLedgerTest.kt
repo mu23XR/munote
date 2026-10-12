@@ -246,6 +246,87 @@ class OcrQueueLedgerTest {
     }
 
     @Test
+    fun repeatedlyKilledPdfIsSkippedWithoutBlockingOtherFiles() =
+        withLedger { queue, dir ->
+            val entries = queue.three()
+            val first = entries[0]
+            val originalAt = 10_000_000L
+
+            assertEquals(first.id, queue.claimNext()!!.id)
+            queue.progress(first.id, "第 303 页，写入文字层", 303, 583, 95)
+
+            queue.recoverAfterWorkerRestart(originalAt)
+            assertEquals(OcrQueueLedger.Status.WAITING, queue.stateOf(first.id))
+            assertEquals(1, queue.snapshot().entries[0].unexpectedRestarts)
+            assertEquals(first.id, queue.claimNext()!!.id)
+
+            queue.recoverAfterWorkerRestart(originalAt + 3_000)
+            assertEquals(2, queue.snapshot().entries[0].unexpectedRestarts)
+            assertEquals(first.id, queue.claimNext()!!.id)
+
+            // Third abnormal shutdown affects only document A.
+            queue.recoverAfterWorkerRestart(originalAt + 6_000)
+            val failed = queue.snapshot().entries[0]
+            assertEquals(OcrQueueLedger.Status.FAILED, failed.status)
+            assertEquals(303, failed.page)
+            assertEquals(583, failed.total)
+            assertTrue(failed.error.contains("继续处理队列"))
+            assertEquals(entries[1].id, queue.claimNext()!!.id)
+            queue.finish(entries[1].id, OcrQueueLedger.Status.DONE)
+            assertEquals(entries[2].id, queue.claimNext()!!.id)
+            queue.finish(entries[2].id, OcrQueueLedger.Status.DONE)
+
+            // The manifest (including error and OCR progress) persists.
+            val restored = OcrQueueLedger(File(dir, "queue.json"))
+            assertEquals(OcrQueueLedger.Status.FAILED, restored.stateOf(first.id))
+            assertEquals(303, restored.snapshot().entries[0].page)
+            assertNull(restored.claimNext())
+
+            // User can retry this one file later; it is not permanently banned.
+            restored.retry(first.id)
+            val retried = restored.snapshot().entries[0]
+            assertEquals(0, retried.unexpectedRestarts)
+            assertEquals("", retried.error)
+            assertEquals(first.id, restored.claimNext()!!.id)
+        }
+
+    @Test
+    fun crashRecoveryCountExpiresAfterAnHourAndManualPauseIsNotADeath() =
+        withLedger { queue, _ ->
+            val entries = queue.three()
+            val t0 = 4_000_000L
+            queue.claimNext()
+            queue.recoverAfterWorkerRestart(t0)
+            assertEquals(1, queue.snapshot().entries[0].unexpectedRestarts)
+
+            queue.claimNext()
+            queue.recoverAfterWorkerRestart(t0 + 2L * 60L * 60L * 1000L)
+            assertEquals(1, queue.snapshot().entries[0].unexpectedRestarts)
+
+            // A deliberate user pause resets the automatic-recovery counter.
+            queue.claimNext()
+            queue.pause(entries[0].id)
+            queue.finish(entries[0].id, OcrQueueLedger.Status.PAUSED)
+            assertEquals(0, queue.snapshot().entries[0].unexpectedRestarts)
+            queue.resume(entries[0].id)
+            assertEquals(entries[0].id, queue.claimNext()!!.id)
+        }
+
+    @Test
+    fun queueManifestFromPreviousVersionLoadsWithoutRestartMetadata() =
+        withLedger { queue, dir ->
+            val entries = queue.three()
+            val manifest = File(dir, "queue.json")
+            var json = manifest.readText(Charsets.UTF_8)
+            // Old saved jobs have neither restart count nor restart timestamp.
+            assertFalse(json.contains("unexpectedRestarts"))
+            val oldQueue = OcrQueueLedger(manifest)
+            assertEquals(3, oldQueue.snapshot().entries.size)
+            assertEquals(0, oldQueue.snapshot().entries[0].unexpectedRestarts)
+            assertEquals(entries[0].id, oldQueue.claimNext()!!.id)
+        }
+
+    @Test
     fun queueRecoversFromCorruptedPrimaryManifest() = withLedger { queue, dir ->
         val entries = queue.three()
         queue.claimNext()
