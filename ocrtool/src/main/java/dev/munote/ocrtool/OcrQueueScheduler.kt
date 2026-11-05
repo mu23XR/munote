@@ -51,6 +51,19 @@ internal object OcrQueueScheduler {
         return File(root, "queue-$taskId")
     }
 
+    fun cacheManager(context: Context): OcrCacheManager {
+        val app = context.applicationContext
+        val preferred = app.getExternalFilesDir("muocr-work")
+        val fallback = File(app.filesDir, "muocr-work")
+        val roots = listOfNotNull(preferred, fallback).distinctBy { it.absolutePath }
+        return OcrCacheManager(
+            roots,
+            store(app),
+            { uri -> deleteIncompleteOutput(app, uri) },
+            File(app.filesDir, "muocr-font-v1")
+        )
+    }
+
     fun createOutputFile(context: Context, task: OcrQueueLedger.Entry): Uri {
         val tree = DocumentFile.fromTreeUri(context, Uri.parse(task.treeUri))
             ?: throw IOException("无法打开输出文件夹，请重新授权")

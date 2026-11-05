@@ -55,8 +55,8 @@ android {
         applicationId = "dev.munote.ocrtool"
         minSdk = 29
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.1.3"
+        versionCode = 10
+        versionName = "1.1.4"
     }
 
     signingConfigs {

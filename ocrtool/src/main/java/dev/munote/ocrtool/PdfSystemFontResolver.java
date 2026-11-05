@@ -98,6 +98,15 @@ public final class PdfSystemFontResolver implements Closeable {
             return cached.pdfFont;
         }
 
+        // Reuse already loaded fonts across mixed Chinese/math lines. Otherwise
+        // per-codepoint fallback creates hundreds of duplicate PDF font objects.
+        for (ResolvedFont loaded : cache.values()) {
+            if (supports(loaded.trueTypeFont, text)) {
+                rememberUnicode(loaded, text);
+                return loaded.pdfFont;
+            }
+        }
+
         IOException lastError = null;
         final List<File> candidates = new ArrayList<>();
         if ("chinese".equals(script) || "unicode".equals(script) ||

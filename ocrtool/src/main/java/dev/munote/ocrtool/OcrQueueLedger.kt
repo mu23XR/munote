@@ -249,6 +249,58 @@ internal class OcrQueueLedger(private val manifest: File) {
      * between those two operations. Only CANCELLED is safe for immediate
      * cleanup; CANCELLING is owned by the running worker.
      */
+    data class CacheCleanupAuthorization(val previousStatus: String, val outputUri: String)
+
+    /**
+     * Authorize cleanup atomically with the queue state change. Incomplete
+     * work is cancelled BEFORE its private working files can be deleted.
+     */
+    @Synchronized
+    fun authorizeCacheCleanup(id: String, discardProgress: Boolean): CacheCleanupAuthorization? =
+        edit { state ->
+            val entry = state.entries.find { it.id == id } ?: return@edit null
+            when (entry.status) {
+                Status.DONE, Status.CANCELLED ->
+                    CacheCleanupAuthorization(entry.status, entry.outputUri)
+                Status.WAITING, Status.PAUSED, Status.FAILED -> {
+                    if (!discardProgress) return@edit null
+                    val authorization = CacheCleanupAuthorization(entry.status, entry.outputUri)
+                    markCacheDiscarded(entry)
+                    authorization
+                }
+                else -> null
+            }
+        }
+
+    /** All-or-nothing protection against a running worker during bulk purge. */
+    @Synchronized
+    fun authorizeBulkCacheCleanup(): List<Pair<String, CacheCleanupAuthorization>>? =
+        edit { state ->
+            if (state.entries.any {
+                    it.status in setOf(Status.RUNNING, Status.PAUSING, Status.CANCELLING)
+                }) return@edit null
+            state.entries.map { entry ->
+                val authorization = CacheCleanupAuthorization(entry.status, entry.outputUri)
+                if (entry.status !in setOf(Status.DONE, Status.CANCELLED)) {
+                    markCacheDiscarded(entry)
+                }
+                entry.id to authorization
+            }
+        }
+
+    private fun markCacheDiscarded(entry: Entry) {
+        entry.status = Status.CANCELLED
+        entry.stage = "已清除缓存"
+        entry.error = "缓存已手动删除，重新处理需从头开始"
+        entry.page = 0
+        entry.total = 0
+        entry.progress = 0
+        entry.outputUri = ""
+        entry.pausedByGlobal = false
+        entry.unexpectedRestarts = 0
+        entry.lastUnexpectedRestartAt = 0L
+    }
+
     @Synchronized
     fun cancel(id: String): String? = edit { state ->
         val entry = state.entries.find { it.id == id } ?: return@edit null

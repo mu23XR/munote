@@ -15,11 +15,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.work.WorkManager
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+import java.util.Locale
 
 /**
  * GUI for the durable serial OCR queue.
@@ -40,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var taskContainer: LinearLayout
     private lateinit var allButton: Button
     private lateinit var scroll: ScrollView
+    private lateinit var cacheSummaryText: TextView
+    private var cacheCleaning = false
 
     private val folderPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -114,11 +118,13 @@ class MainActivity : AppCompatActivity() {
             .observe(this) { refreshQueue() }
 
         refreshQueue()
+        refreshCacheSummary()
     }
 
     override fun onResume() {
         super.onResume()
         if (::taskContainer.isInitialized) refreshQueue()
+        if (::cacheSummaryText.isInitialized) refreshCacheSummary()
         // Continue best-effort cleanup of cancelled task scratch files even
         // if the app process died part-way through a previous cancellation.
         Thread {
@@ -171,7 +177,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(20), dp(18), dp(24))
         }
 
-        root.addView(text("MuOCR · 1.1.3", 27f))
+        root.addView(text("MuOCR · 1.1.4", 27f))
         root.addView(text(
             "批量 OCR：多个 PDF 严格排队，每个文件单独暂停、继续、取消或重试。异常反复中断的文件会被跳过，不阻塞后续文件。",
             14f, 10
@@ -182,6 +188,14 @@ class MainActivity : AppCompatActivity() {
         root.addView(Button(this).apply {
             text = "选择输出文件夹"
             setOnClickListener { folderPicker.launch(null) }
+        })
+
+        cacheSummaryText = text("缓存占用：正在统计…", 14f, 14)
+        root.addView(cacheSummaryText)
+        root.addView(Button(this).apply {
+            text = "管理缓存"
+            isAllCaps = false
+            setOnClickListener { showCacheManager() }
         })
 
         root.addView(text("OCR 分辨率", 15f, 14))
@@ -248,6 +262,235 @@ class MainActivity : AppCompatActivity() {
             addView(root)
         }
         return scroll
+    }
+
+    private fun formatCacheSize(bytes: Long): String {
+        val value = bytes.coerceAtLeast(0L).toDouble()
+        return when {
+            value >= 1024 * 1024 * 1024 ->
+                String.format(Locale.ROOT, "%.2f GB", value / 1024 / 1024 / 1024)
+            value >= 1024 * 1024 ->
+                String.format(Locale.ROOT, "%.1f MB", value / 1024 / 1024)
+            value >= 1024 ->
+                String.format(Locale.ROOT, "%.1f KB", value / 1024)
+            else -> bytes.toString() + " B"
+        }
+    }
+
+    private fun refreshCacheSummary() {
+        Thread {
+            val result = runCatching {
+                OcrQueueScheduler.cacheManager(applicationContext).inspect()
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || !::cacheSummaryText.isInitialized) return@runOnUiThread
+                cacheSummaryText.text = result.fold(
+                    onSuccess = { snapshot ->
+                        "缓存占用：" + formatCacheSize(snapshot.totalBytes) +
+                            "（工作缓存 " + formatCacheSize(snapshot.workBytes) +
+                            "，字体 " + formatCacheSize(snapshot.fontBytes) + "）"
+                    },
+                    onFailure = { "缓存占用：统计失败，点击「管理缓存」重试" }
+                )
+            }
+        }.start()
+    }
+
+    private fun showCacheManager() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(12))
+        }
+        val viewport = ScrollView(this).apply { addView(content) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("MuOCR 缓存管理")
+            .setView(viewport)
+            .setNegativeButton("关闭", null)
+            .create()
+        dialog.show()
+        loadCacheDetails(content, dialog)
+    }
+
+    private fun loadCacheDetails(content: LinearLayout, dialog: AlertDialog) {
+        content.removeAllViews()
+        content.addView(text("正在统计本机缓存，请稍候…", 14f))
+        Thread {
+            val result = runCatching {
+                OcrQueueScheduler.cacheManager(applicationContext).inspect()
+            }
+            runOnUiThread {
+                if (!dialog.isShowing || isDestroyed) return@runOnUiThread
+                content.removeAllViews()
+                result.onSuccess { displayCacheDetails(content, dialog, it) }
+                    .onFailure {
+                        content.addView(text("无法读取缓存：" + (it.message ?: "未知错误"), 14f))
+                    }
+            }
+        }.start()
+    }
+
+    private fun displayCacheDetails(
+        content: LinearLayout, dialog: AlertDialog, snapshot: OcrCacheManager.Snapshot
+    ) {
+        content.addView(text("总占用：" + formatCacheSize(snapshot.totalBytes), 18f))
+        content.addView(text(
+            "工作缓存 " + formatCacheSize(snapshot.workBytes) +
+                " · 内置字体副本 " + formatCacheSize(snapshot.fontBytes), 13f, 4
+        ))
+        content.addView(text(
+            "已完成任务会自动清理工作缓存；失败、暂停任务保留 OCR / PDF 断点。" +
+                "这里统计的是 MuOCR 私有缓存，不包括原 PDF 和已导出的 PDF。",
+            12f, 6
+        ))
+        content.addView(Button(this).apply {
+            text = "清理已完成/取消任务缓存"
+            isAllCaps = false
+            isEnabled = !cacheCleaning
+            setOnClickListener {
+                confirmCacheAction(dialog, content,
+                    "清理完成任务的残留缓存？",
+                    "只删除已完成或已取消任务的工作文件；不删除导出的 PDF，也不影响暂停/失败任务。",
+                    false) { it.cleanCompleted() }
+            }
+        })
+        content.addView(Button(this).apply {
+            text = "清理全部缓存（包括旧版缓存）"
+            isAllCaps = false
+            isEnabled = !cacheCleaning
+            setOnClickListener {
+                confirmCacheAction(dialog, content,
+                    "清理全部缓存？",
+                    "这会取消所有未完成任务，删除其 OCR 页面和 PDF 导出断点，" +
+                        "并删除旧版 0.1.3 工作缓存和内置字体副本。" +
+                        "原始 PDF、已经导出的 PDF 不会删除。正在运行时操作会被拒绝。",
+                    true) { it.cleanAll() }
+            }
+        })
+        content.addView(text("每个文件的缓存", 16f, 12))
+        val jobs = snapshot.jobs.filter { it.bytes > 0L }
+        if (jobs.isEmpty()) content.addView(text("当前没有队列任务缓存。", 13f))
+        for (job in jobs) {
+            val status = when (job.status) {
+                OcrQueueLedger.Status.DONE -> "已完成"
+                OcrQueueLedger.Status.CANCELLED -> "已取消"
+                OcrQueueLedger.Status.FAILED -> "失败，断点保留"
+                OcrQueueLedger.Status.PAUSED -> "已暂停，断点保留"
+                OcrQueueLedger.Status.WAITING -> "排队中"
+                else -> "正在处理，禁止清理"
+            }
+            content.addView(text(
+                job.name + " · " + formatCacheSize(job.bytes) + " · " + status, 13f, 8
+            ))
+            val safe = job.status in setOf(
+                OcrQueueLedger.Status.DONE, OcrQueueLedger.Status.CANCELLED
+            )
+            val busy = job.status in setOf(
+                OcrQueueLedger.Status.RUNNING, OcrQueueLedger.Status.PAUSING,
+                OcrQueueLedger.Status.CANCELLING
+            )
+            content.addView(Button(this).apply {
+                text = if (safe) "清理此文件缓存" else if (busy) "正在处理，无法清理"
+                    else "清理此文件并放弃断点"
+                isAllCaps = false
+                isEnabled = !busy && !cacheCleaning
+                setOnClickListener {
+                    confirmCacheAction(dialog, content,
+                        "清理「" + job.name.take(48) + "」的缓存？",
+                        if (safe) "将释放工作副本和临时数据，不影响原始 PDF / 已导出 PDF。"
+                        else "该任务会被取消，已识别的页面、导出断点都将被永久删除。" +
+                            "以后重试需要从头识别。",
+                        false) { it.cleanTask(job.id, !safe) }
+                }
+            })
+        }
+        val extra = snapshot.legacy + snapshot.orphans
+        if (extra.isNotEmpty()) {
+            content.addView(text("旧版 / 孤立缓存", 16f, 12))
+            content.addView(text(
+                "旧版 0.1.3 的缓存可能含有尚未导出的几百页 OCR 结果。" +
+                    "不清理它也可以继续使用新版；确认不再需要断点后再删除。",
+                12f, 4
+            ))
+            for (folder in extra) {
+                content.addView(text(
+                    folder.name + " · " + formatCacheSize(folder.bytes), 12f, 7
+                ))
+                content.addView(Button(this).apply {
+                    text = "删除这份旧缓存"
+                    isAllCaps = false
+                    isEnabled = !cacheCleaning
+                    setOnClickListener {
+                        confirmCacheAction(dialog, content,
+                            "彻底删除旧版缓存？",
+                            "此目录可能存有你之前 395 页教材的 OCR 结果。" +
+                                "删除后无法找回其断点，请确定已经成功导出，" +
+                                "并且没有仍在处理的旧版任务。",
+                            true) { it.cleanLegacy(folder) }
+                    }
+                })
+            }
+        }
+        if (snapshot.unclassifiedBytes > 0L) content.addView(text(
+            "另有 " + formatCacheSize(snapshot.unclassifiedBytes) +
+                " 未识别文件，为避免误删暂时保留。", 12f, 10
+        ))
+    }
+
+    private fun confirmCacheAction(
+        dialog: AlertDialog,
+        content: LinearLayout,
+        title: String,
+        warning: String,
+        doubleConfirm: Boolean,
+        operation: (OcrCacheManager) -> OcrCacheManager.Cleanup
+    ) {
+        if (cacheCleaning) return
+        val proceed = {
+            AlertDialog.Builder(this)
+                .setTitle(if (doubleConfirm) "最后确认：断点不可恢复" else title)
+                .setMessage(warning)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确认清理") { _, _ ->
+                    executeCacheCleanup(dialog, content, operation)
+                }
+                .show()
+            Unit
+        }
+        if (doubleConfirm) {
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(warning)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("继续") { _, _ -> proceed() }
+                .show()
+        } else {
+            proceed()
+        }
+    }
+
+    private fun executeCacheCleanup(
+        dialog: AlertDialog,
+        content: LinearLayout,
+        operation: (OcrCacheManager) -> OcrCacheManager.Cleanup
+    ) {
+        if (cacheCleaning) return
+        cacheCleaning = true
+        Thread {
+            val result = runCatching {
+                operation(OcrQueueScheduler.cacheManager(applicationContext))
+            }.getOrElse { OcrCacheManager.Cleanup(false, "清理失败：" +
+                    (it.message ?: it.javaClass.simpleName)) }
+            runOnUiThread {
+                cacheCleaning = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                toast(result.details + if (result.bytesRemoved > 0L) {
+                    " · 已删除约 " + formatCacheSize(result.bytesRemoved)
+                } else "")
+                refreshCacheSummary()
+                refreshQueue()
+                if (dialog.isShowing) loadCacheDetails(content, dialog)
+            }
+        }.start()
     }
 
     private fun updateQualityButtons(row: LinearLayout) {
