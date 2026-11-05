@@ -638,6 +638,7 @@ class LargePdfOcrWorker(
             }
 
             PdfSystemFontResolver(document, TAG, applicationContext).use { fonts ->
+                val fontRuns = OcrFontRuns(fonts)
                 for (index in start until endExclusive) {
                     coroutineContext.ensureActive()
                     checkTaskInterruption()
@@ -647,7 +648,7 @@ class LargePdfOcrWorker(
                     if (page.lines.isEmpty()) continue
 
                     val pdfPage = document.getPage(index)
-                    appendInvisibleLayer(document, pdfPage, page, fonts)
+                    appendInvisibleLayer(document, pdfPage, page, fontRuns)
                     markPageForIncrementalSave(document, pdfPage, touched)
                     changed = true
                     report("写入文字层", index + 1, expectedPages,
@@ -729,7 +730,7 @@ class LargePdfOcrWorker(
         document: PDDocument,
         page: PDPage,
         ocrPage: OcrPageJournal.Page,
-        fonts: PdfSystemFontResolver
+        fontRuns: OcrFontRuns
     ) {
         val crop = page.cropBox ?: page.mediaBox ?: return
         val rotation = normalizeRotation(page.rotation)
@@ -752,9 +753,13 @@ class LargePdfOcrWorker(
                     val boxH = max(1f, bounds.height() * sy)
                     val x = bounds.left * sx
                     val y = displayH - bounds.bottom * sy + boxH * 0.12f
-                    val font = fonts.resolve(line.text, false)
+                    val searchableText = OcrTextNormalizer.forSearchLayer(line.text)
+                    val runs = fontRuns.split(searchableText)
+                    if (runs.isEmpty()) continue
                     val fontSize = (boxH * 0.88f).coerceIn(1f, 96f)
-                    val naturalWidth = font.getStringWidth(line.text) / 1000f * fontSize
+                    val naturalWidth = runs.sumOf { run ->
+                        (run.font.getStringWidth(run.text) / 1000f * fontSize).toDouble()
+                    }.toFloat()
                     if (naturalWidth <= 0f) continue
                     val horizontalScale = (boxW / naturalWidth * 100f).coerceIn(5f, 1000f)
 
@@ -763,10 +768,12 @@ class LargePdfOcrWorker(
                         out.beginText()
                         beganText = true
                         out.setRenderingMode(RenderingMode.NEITHER)
-                        out.setFont(font, fontSize)
                         out.setHorizontalScaling(horizontalScale)
                         out.newLineAtOffset(x, y)
-                        out.showText(line.text)
+                        for (run in runs) {
+                            out.setFont(run.font, fontSize)
+                            out.showText(run.text)
+                        }
                         out.endText()
                         beganText = false
                     } finally {

@@ -56,16 +56,16 @@ jobs:
           test -f "$APK"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --print-certs "$APK"
-          cp "$APK" MuOCR-v1.1.3.apk
-          sha256sum MuOCR-v1.1.3.apk > MuOCR-v1.1.3.apk.sha256
+          cp "$APK" MuOCR-v1.1.4.apk
+          sha256sum MuOCR-v1.1.4.apk > MuOCR-v1.1.4.apk.sha256
 
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/main'
         with:
-          name: MuOCR-v1.1.3
+          name: MuOCR-v1.1.4
           path: |
-            MuOCR-v1.1.3.apk
-            MuOCR-v1.1.3.apk.sha256
+            MuOCR-v1.1.4.apk
+            MuOCR-v1.1.4.apk.sha256
           retention-days: 30
 
       - name: Publish MuOCR stable release
@@ -74,14 +74,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="muocr-v1.1.3"
+          TAG="muocr-v1.1.4"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists. Published APKs must never be overwritten."
             exit 1
           fi
-          gh release create "$TAG" MuOCR-v1.1.3.apk MuOCR-v1.1.3.apk.sha256 \
+          gh release create "$TAG" MuOCR-v1.1.4.apk MuOCR-v1.1.4.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "MuOCR v1.1.3 — 队列异常恢复保护" \
-            --notes "MuOCR v1.1.3 正式版：多个 PDF 严格串行，单文件独立缓存、暂停、继续、取消及手动重试。新增异常中断隔离：同一 PDF 在 60 分钟内被系统异常终止并重启 3 次后自动标记失败，保留 OCR/PDF 断点并处理下一个文件，避免队列死循环；失败时仅删除不完整输出，不删除 OCR 缓存。升级保持原包名、签名、旧队列 JSON 兼容，可覆盖安装。已通过自动化测试及签名校验，用户真实 1GB 文件完整设备验收仍未完成。" \
+            --title "MuOCR v1.1.4 — 缓存管理及文字层字体兼容修复" \
+            --notes "MuOCR v1.1.4 正式版：新增缓存管理、混排字体回退及 OCR 简繁规范化；多个 PDF 严格串行，单文件独立缓存、暂停、继续、取消及手动重试。新增异常中断隔离：同一 PDF 在 60 分钟内被系统异常终止并重启 3 次后自动标记失败，保留 OCR/PDF 断点并处理下一个文件，避免队列死循环；失败时仅删除不完整输出，不删除 OCR 缓存。升级保持原包名、签名、旧队列 JSON 兼容，可覆盖安装。已通过自动化测试及签名校验，用户真实 1GB 文件完整设备验收仍未完成。" \
             --latest
